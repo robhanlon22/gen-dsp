@@ -31,7 +31,11 @@ def build_forward_deps(graph: Graph) -> dict[str, set[str]]:
         for field_name, value in node.__dict__.items():
             if field_name in ("id", "op"):
                 continue
-            if isinstance(value, str) and value in node_ids:
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item in node_ids:
+                        deps[nid].add(item)
+            elif isinstance(value, str) and value in node_ids:
                 if not is_feedback_edge(node, field_name):
                     deps[nid].add(value)
     return deps

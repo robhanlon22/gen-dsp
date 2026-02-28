@@ -32,13 +32,17 @@ from gen_dsp.graph import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Noise,
     OnePole,
     Param,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -47,7 +51,9 @@ from gen_dsp.graph import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     Subgraph,
     TriOsc,
@@ -1144,3 +1150,339 @@ class TestEdgeCases:
         )
         with pytest.raises(ValueError, match="does not match input length"):
             simulate(g, inputs={"in1": np.ones(10, dtype=np.float32)}, n_samples=5)
+
+
+# ---------------------------------------------------------------------------
+# New ops and node types (v0.2) -- simulation correctness
+# ---------------------------------------------------------------------------
+
+
+class TestNewOpSimulation:
+    """Simulation correctness for new UnaryOp, BinOp, Compare ops and new nodes."""
+
+    def _run_unary(self, op: str, val: float) -> float:
+        g = Graph(
+            name="t",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[UnaryOp(id="x", op=op, a="in1")],
+        )
+        inp = np.array([val], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        return float(res.outputs["out1"][0])
+
+    def _run_binop(self, op: str, a: float, b: float) -> float:
+        g = Graph(
+            name="t",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op=op, a="in1", b=b)],
+        )
+        inp = np.array([a], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        return float(res.outputs["out1"][0])
+
+    def test_tan(self) -> None:
+        assert self._run_unary("tan", 1.0) == pytest.approx(math.tan(1.0), rel=1e-5)
+
+    def test_sinh(self) -> None:
+        assert self._run_unary("sinh", 1.0) == pytest.approx(math.sinh(1.0), rel=1e-5)
+
+    def test_cosh(self) -> None:
+        assert self._run_unary("cosh", 1.0) == pytest.approx(math.cosh(1.0), rel=1e-5)
+
+    def test_asinh(self) -> None:
+        assert self._run_unary("asinh", 2.0) == pytest.approx(math.asinh(2.0), rel=1e-5)
+
+    def test_acosh(self) -> None:
+        assert self._run_unary("acosh", 2.0) == pytest.approx(math.acosh(2.0), rel=1e-5)
+
+    def test_atanh(self) -> None:
+        assert self._run_unary("atanh", 0.5) == pytest.approx(math.atanh(0.5), rel=1e-5)
+
+    def test_exp2(self) -> None:
+        assert self._run_unary("exp2", 3.0) == pytest.approx(8.0, rel=1e-5)
+
+    def test_log2(self) -> None:
+        assert self._run_unary("log2", 8.0) == pytest.approx(3.0, rel=1e-5)
+
+    def test_log10(self) -> None:
+        assert self._run_unary("log10", 100.0) == pytest.approx(2.0, rel=1e-5)
+
+    def test_fract(self) -> None:
+        assert self._run_unary("fract", 3.7) == pytest.approx(0.7, rel=1e-5)
+
+    def test_fract_negative(self) -> None:
+        # fract(-0.3) = -0.3 - floor(-0.3) = -0.3 - (-1) = 0.7
+        assert self._run_unary("fract", -0.3) == pytest.approx(0.7, rel=1e-5)
+
+    def test_trunc(self) -> None:
+        assert self._run_unary("trunc", 3.7) == pytest.approx(3.0)
+
+    def test_trunc_negative(self) -> None:
+        assert self._run_unary("trunc", -3.7) == pytest.approx(-3.0)
+
+    def test_not_zero(self) -> None:
+        assert self._run_unary("not", 0.0) == 1.0
+
+    def test_not_nonzero(self) -> None:
+        assert self._run_unary("not", 5.0) == 0.0
+
+    def test_bool_zero(self) -> None:
+        assert self._run_unary("bool", 0.0) == 0.0
+
+    def test_bool_nonzero(self) -> None:
+        assert self._run_unary("bool", -3.0) == 1.0
+
+    def test_atan2(self) -> None:
+        assert self._run_binop("atan2", 1.0, 1.0) == pytest.approx(
+            math.atan2(1.0, 1.0), rel=1e-5
+        )
+
+    def test_hypot(self) -> None:
+        assert self._run_binop("hypot", 3.0, 4.0) == pytest.approx(5.0, rel=1e-5)
+
+    def test_absdiff(self) -> None:
+        assert self._run_binop("absdiff", 3.0, 5.0) == pytest.approx(2.0)
+
+    def test_step_below(self) -> None:
+        assert self._run_binop("step", 0.3, 0.5) == 0.0
+
+    def test_step_above(self) -> None:
+        assert self._run_binop("step", 0.7, 0.5) == 1.0
+
+    def test_step_equal(self) -> None:
+        assert self._run_binop("step", 0.5, 0.5) == 1.0
+
+    def test_and_both_true(self) -> None:
+        assert self._run_binop("and", 1.0, 2.0) == 1.0
+
+    def test_and_one_false(self) -> None:
+        assert self._run_binop("and", 1.0, 0.0) == 0.0
+
+    def test_and_both_false(self) -> None:
+        assert self._run_binop("and", 0.0, 0.0) == 0.0
+
+    def test_or_both_true(self) -> None:
+        assert self._run_binop("or", 1.0, 2.0) == 1.0
+
+    def test_or_one_true(self) -> None:
+        assert self._run_binop("or", 0.0, 3.0) == 1.0
+
+    def test_or_both_false(self) -> None:
+        assert self._run_binop("or", 0.0, 0.0) == 0.0
+
+    def test_xor_both_true(self) -> None:
+        assert self._run_binop("xor", 1.0, 2.0) == 0.0
+
+    def test_xor_one_true(self) -> None:
+        assert self._run_binop("xor", 1.0, 0.0) == 1.0
+
+    def test_xor_both_false(self) -> None:
+        assert self._run_binop("xor", 0.0, 0.0) == 0.0
+
+    def test_compare_neq(self) -> None:
+        g = Graph(
+            name="t",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Compare(id="x", op="neq", a="in1", b=0.0)],
+        )
+        inp = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        np.testing.assert_array_equal(res.outputs["out1"], [0.0, 1.0, 0.0])
+
+    def test_pass_node(self) -> None:
+        g = Graph(
+            name="t",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Pass(id="x", a="in1")],
+        )
+        inp = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        np.testing.assert_array_equal(res.outputs["out1"], inp)
+
+    def test_named_constant_pi(self) -> None:
+        g = Graph(
+            name="t",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[NamedConstant(id="x", op="pi")],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.pi, rel=1e-5)
+
+    def test_named_constant_e(self) -> None:
+        g = Graph(
+            name="t",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[NamedConstant(id="x", op="e")],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.e, rel=1e-5)
+
+    def test_smoothstep_below(self) -> None:
+        g = Graph(
+            name="t",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Smoothstep(id="x", a=-1.0, edge0=0.0, edge1=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0)
+
+    def test_smoothstep_above(self) -> None:
+        g = Graph(
+            name="t",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Smoothstep(id="x", a=2.0, edge0=0.0, edge1=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+
+    def test_smoothstep_mid(self) -> None:
+        g = Graph(
+            name="t",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Smoothstep(id="x", a=0.5, edge0=0.0, edge1=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # t=0.5, result = 0.5*0.5*(3-2*0.5) = 0.25*2 = 0.5
+        # Actually: 0.25 * 2.0 = 0.5
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# Gate / Selector routing
+# ---------------------------------------------------------------------------
+
+
+class TestGateRouting:
+    def _gate_graph(self, count: int = 3) -> Graph:
+        """1-to-N gate with N outputs."""
+        nodes = [
+            GateRoute(id="gr", a="in1", index="idx", count=count),
+        ]
+        outputs = []
+        for ch in range(1, count + 1):
+            nid = f"go{ch}"
+            nodes.append(GateOut(id=nid, gate="gr", channel=ch))
+            outputs.append(AudioOutput(id=f"out{ch}", source=nid))
+        return Graph(
+            name="gate",
+            inputs=[AudioInput(id="in1")],
+            outputs=outputs,
+            params=[Param(name="idx", min=0.0, max=float(count), default=0.0)],
+            nodes=nodes,
+        )
+
+    def test_gate_index_zero_all_muted(self) -> None:
+        g = self._gate_graph(3)
+        inp = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": 0.0}, sample_rate=SR)
+        for ch in range(1, 4):
+            np.testing.assert_array_equal(res.outputs[f"out{ch}"], 0.0)
+
+    def test_gate_index_1_routes_to_ch1(self) -> None:
+        g = self._gate_graph(3)
+        inp = np.array([0.7, 0.7], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": 1.0}, sample_rate=SR)
+        np.testing.assert_array_almost_equal(res.outputs["out1"], 0.7)
+        np.testing.assert_array_equal(res.outputs["out2"], 0.0)
+        np.testing.assert_array_equal(res.outputs["out3"], 0.0)
+
+    def test_gate_index_2_routes_to_ch2(self) -> None:
+        g = self._gate_graph(3)
+        inp = np.array([0.5], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": 2.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == 0.0
+        assert float(res.outputs["out2"][0]) == pytest.approx(0.5)
+        assert float(res.outputs["out3"][0]) == 0.0
+
+    def test_gate_index_clamps_to_count(self) -> None:
+        g = self._gate_graph(2)
+        inp = np.array([1.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": 5.0}, sample_rate=SR)
+        # Clamped to 2 -> ch2 gets signal
+        assert float(res.outputs["out1"][0]) == 0.0
+        assert float(res.outputs["out2"][0]) == pytest.approx(1.0)
+
+    def test_gate_negative_index_clamps_to_zero(self) -> None:
+        g = self._gate_graph(2)
+        inp = np.array([1.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": -1.0}, sample_rate=SR)
+        # Clamped to 0 -> all muted
+        np.testing.assert_array_equal(res.outputs["out1"], 0.0)
+        np.testing.assert_array_equal(res.outputs["out2"], 0.0)
+
+    def test_gate_float_index_truncated(self) -> None:
+        g = self._gate_graph(2)
+        inp = np.array([1.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, params={"idx": 1.9}, sample_rate=SR)
+        # int(1.9) = 1 -> ch1
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+        assert float(res.outputs["out2"][0]) == 0.0
+
+
+class TestSelector:
+    def _selector_graph(self, n: int = 3) -> Graph:
+        """N-to-1 selector."""
+        input_ids = [f"in{i}" for i in range(1, n + 1)]
+        return Graph(
+            name="selector",
+            inputs=[AudioInput(id=iid) for iid in input_ids],
+            outputs=[AudioOutput(id="out1", source="mux")],
+            params=[Param(name="idx", min=0.0, max=float(n), default=0.0)],
+            nodes=[
+                Selector(id="mux", index="idx", inputs=input_ids),
+            ],
+        )
+
+    def test_selector_index_zero_outputs_zero(self) -> None:
+        g = self._selector_graph(3)
+        ins = {f"in{i}": np.array([float(i)], dtype=np.float32) for i in range(1, 4)}
+        res = simulate(g, inputs=ins, params={"idx": 0.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == 0.0
+
+    def test_selector_index_1_selects_first(self) -> None:
+        g = self._selector_graph(3)
+        ins = {f"in{i}": np.array([float(i)], dtype=np.float32) for i in range(1, 4)}
+        res = simulate(g, inputs=ins, params={"idx": 1.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+
+    def test_selector_index_3_selects_third(self) -> None:
+        g = self._selector_graph(3)
+        ins = {f"in{i}": np.array([float(i)], dtype=np.float32) for i in range(1, 4)}
+        res = simulate(g, inputs=ins, params={"idx": 3.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(3.0)
+
+    def test_selector_index_clamps_to_n(self) -> None:
+        g = self._selector_graph(2)
+        ins = {"in1": np.array([10.0], dtype=np.float32), "in2": np.array([20.0], dtype=np.float32)}
+        res = simulate(g, inputs=ins, params={"idx": 5.0}, sample_rate=SR)
+        # Clamped to 2 -> selects in2
+        assert float(res.outputs["out1"][0]) == pytest.approx(20.0)
+
+    def test_selector_negative_index_clamps_to_zero(self) -> None:
+        g = self._selector_graph(2)
+        ins = {"in1": np.array([10.0], dtype=np.float32), "in2": np.array([20.0], dtype=np.float32)}
+        res = simulate(g, inputs=ins, params={"idx": -1.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == 0.0
+
+    def test_selector_float_index_truncated(self) -> None:
+        g = self._selector_graph(3)
+        ins = {f"in{i}": np.array([float(i)], dtype=np.float32) for i in range(1, 4)}
+        res = simulate(g, inputs=ins, params={"idx": 2.7}, sample_rate=SR)
+        # int(2.7) = 2 -> selects in2
+        assert float(res.outputs["out1"][0]) == pytest.approx(2.0)
+
+    def test_selector_with_literal_inputs(self) -> None:
+        g = Graph(
+            name="sel_lit",
+            outputs=[AudioOutput(id="out1", source="mux")],
+            params=[Param(name="idx", min=0.0, max=2.0, default=1.0)],
+            nodes=[
+                Selector(id="mux", index="idx", inputs=[42.0, 99.0]),
+            ],
+        )
+        res = simulate(g, n_samples=1, params={"idx": 2.0}, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(99.0)

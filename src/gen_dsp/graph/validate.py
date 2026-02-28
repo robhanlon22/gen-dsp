@@ -11,6 +11,8 @@ from gen_dsp.graph.models import (
     DelayLine,
     DelayRead,
     DelayWrite,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Subgraph,
@@ -62,7 +64,11 @@ def _collect_refs(node: object) -> list[str]:
     for field_name, value in node.__dict__.items():
         if field_name in ("id", "op"):
             continue
-        if isinstance(value, str):
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    refs.append(item)
+        elif isinstance(value, str):
             refs.append(value)
     return refs
 
@@ -155,14 +161,26 @@ def validate_graph(
     all_ids = set(node_ids) | all_sources
 
     # String fields that are enum selectors, not node references
-    _NON_REF_FIELDS = {"id", "op", "interp", "mode", "output"}
+    _NON_REF_FIELDS = {"id", "op", "interp", "mode", "output", "count", "channel"}
 
     # 2. Reference resolution -- every str input resolves to a known ID
     for node in graph.nodes:
         for field_name, value in node.__dict__.items():
             if field_name in _NON_REF_FIELDS:
                 continue
-            if isinstance(value, str):
+            if isinstance(value, list):
+                for idx, item in enumerate(value):
+                    if isinstance(item, str) and item not in all_ids:
+                        nid = node.id
+                        errors.append(
+                            GraphValidationError(
+                                "dangling_ref",
+                                f"Node '{nid}' field '{field_name}[{idx}]' references unknown ID '{item}'",
+                                node_id=nid,
+                                field_name=field_name,
+                            )
+                        )
+            elif isinstance(value, str):
                 if value not in all_ids:
                     nid = node.id
                     errors.append(
@@ -239,6 +257,33 @@ def validate_graph(
                 )
             )
 
+    # 4c. Gate consistency -- GateOut must reference a GateRoute, channel in range
+    gate_route_map = {
+        node.id: node for node in graph.nodes if isinstance(node, GateRoute)
+    }
+    for node in graph.nodes:
+        if isinstance(node, GateOut):
+            if node.gate not in gate_route_map:
+                errors.append(
+                    GraphValidationError(
+                        "missing_gate_route",
+                        f"GateOut '{node.id}' references non-existent gate route '{node.gate}'",
+                        node_id=node.id,
+                        field_name="gate",
+                    )
+                )
+            else:
+                gate_route = gate_route_map[node.gate]
+                if node.channel < 1 or node.channel > gate_route.count:
+                    errors.append(
+                        GraphValidationError(
+                            "gate_channel_range",
+                            f"GateOut '{node.id}' channel {node.channel} out of range [1, {gate_route.count}]",
+                            node_id=node.id,
+                            field_name="channel",
+                        )
+                    )
+
     # 5. Control-rate consistency
     if graph.control_interval > 0 and graph.control_nodes:
         ctrl_set = set(graph.control_nodes)
@@ -268,6 +313,18 @@ def validate_graph(
                     continue
                 if isinstance(val, float):
                     continue
+                if isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, float):
+                            continue
+                        if isinstance(item, str):
+                            if item in param_names or item in invariant_ids:
+                                continue
+                            is_inv = False
+                            break
+                    if not is_inv:
+                        break
+                    continue
                 if isinstance(val, str):
                     if val in param_names or val in invariant_ids:
                         continue
@@ -287,26 +344,32 @@ def validate_graph(
             for field_name, value in node.__dict__.items():
                 if field_name in _NON_REF_FIELDS:
                     continue
-                if not isinstance(value, str):
+                str_refs: list[str] = []
+                if isinstance(value, list):
+                    str_refs = [v for v in value if isinstance(v, str)]
+                elif isinstance(value, str):
+                    str_refs = [value]
+                else:
                     continue
-                if value in input_ids:
-                    errors.append(
-                        GraphValidationError(
-                            "control_audio_dep",
-                            f"Control-rate node '{cid}' depends on audio input '{value}'",
-                            node_id=cid,
-                            field_name=field_name,
+                for ref_val in str_refs:
+                    if ref_val in input_ids:
+                        errors.append(
+                            GraphValidationError(
+                                "control_audio_dep",
+                                f"Control-rate node '{cid}' depends on audio input '{ref_val}'",
+                                node_id=cid,
+                                field_name=field_name,
+                            )
                         )
-                    )
-                elif value in node_id_set and value not in allowed:
-                    errors.append(
-                        GraphValidationError(
-                            "control_rate_dep",
-                            f"Control-rate node '{cid}' depends on audio-rate node '{value}'",
-                            node_id=cid,
-                            field_name=field_name,
+                    elif ref_val in node_id_set and ref_val not in allowed:
+                        errors.append(
+                            GraphValidationError(
+                                "control_rate_dep",
+                                f"Control-rate node '{cid}' depends on audio-rate node '{ref_val}'",
+                                node_id=cid,
+                                field_name=field_name,
+                            )
                         )
-                    )
 
     # 6. No pure cycles -- topo sort on non-feedback edges must succeed
     deps = build_forward_deps(graph)

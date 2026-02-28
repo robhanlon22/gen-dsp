@@ -36,7 +36,11 @@ class AudioOutput(BaseModel):
 
 class BinOp(BaseModel):
     id: str
-    op: Literal["add", "sub", "mul", "div", "min", "max", "mod", "pow"]
+    op: Literal[
+        "add", "sub", "mul", "div", "min", "max", "mod", "pow",
+        "atan2", "hypot", "absdiff", "step",
+        "and", "or", "xor",
+    ]
     a: Ref
     b: Ref
 
@@ -59,6 +63,19 @@ class UnaryOp(BaseModel):
         "atan",
         "asin",
         "acos",
+        "tan",
+        "sinh",
+        "cosh",
+        "asinh",
+        "acosh",
+        "atanh",
+        "exp2",
+        "log2",
+        "log10",
+        "fract",
+        "trunc",
+        "not",
+        "bool",
     ]
     a: Ref
 
@@ -118,7 +135,7 @@ class Noise(BaseModel):
 
 class Compare(BaseModel):
     id: str
-    op: Literal["gt", "lt", "gte", "lte", "eq"]
+    op: Literal["gt", "lt", "gte", "lte", "eq", "neq"]
     a: Ref
     b: Ref
 
@@ -311,6 +328,45 @@ class Scale(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Identity / Named constants / Smoothstep
+# ---------------------------------------------------------------------------
+
+
+class Pass(BaseModel):
+    id: str
+    op: Literal["pass"] = "pass"
+    a: Ref
+
+
+class NamedConstant(BaseModel):
+    id: str
+    op: Literal[
+        "pi",
+        "e",
+        "twopi",
+        "halfpi",
+        "invpi",
+        "degtorad",
+        "radtodeg",
+        "sqrt2",
+        "sqrt1_2",
+        "ln2",
+        "ln10",
+        "log2e",
+        "log10e",
+        "phi",
+    ]
+
+
+class Smoothstep(BaseModel):
+    id: str
+    op: Literal["smoothstep"] = "smoothstep"
+    a: Ref
+    edge0: Ref
+    edge1: Ref
+
+
+# ---------------------------------------------------------------------------
 # Subgraph / Macro
 # ---------------------------------------------------------------------------
 
@@ -357,6 +413,33 @@ class BufSize(BaseModel):
     buffer: str  # Buffer node ID
 
 
+# ---------------------------------------------------------------------------
+# Routing
+# ---------------------------------------------------------------------------
+
+
+class GateRoute(BaseModel):
+    id: str
+    op: Literal["gate_route"] = "gate_route"
+    a: Ref  # input signal
+    index: Ref  # 1-based channel selector (0 = mute all)
+    count: int  # number of output channels
+
+
+class GateOut(BaseModel):
+    id: str
+    op: Literal["gate_out"] = "gate_out"
+    gate: str  # GateRoute node ID
+    channel: int  # 1-based channel number this output reads
+
+
+class Selector(BaseModel):
+    id: str
+    op: Literal["selector"] = "selector"
+    index: Ref  # 1-based input selector (0 = zero output)
+    inputs: list[Ref]  # the N inputs to select from
+
+
 # Discriminated union of all node types
 Node = Annotated[
     Union[
@@ -394,11 +477,17 @@ Node = Annotated[
         SmoothParam,
         Peek,
         Scale,
+        Pass,
+        NamedConstant,
+        Smoothstep,
         Subgraph,
         Buffer,
         BufRead,
         BufWrite,
         BufSize,
+        GateRoute,
+        GateOut,
+        Selector,
     ],
     Field(discriminator="op"),
 ]

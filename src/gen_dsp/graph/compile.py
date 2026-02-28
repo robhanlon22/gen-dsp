@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math as _math
 import re
 from pathlib import Path
 from typing import Callable
@@ -27,14 +28,18 @@ from gen_dsp.graph.models import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Node,
     Noise,
     OnePole,
     Param,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -43,7 +48,9 @@ from gen_dsp.graph.models import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     TriOsc,
     UnaryOp,
@@ -70,6 +77,8 @@ _BINOP_FUNCS: dict[str, str] = {
     "max": "fmaxf",
     "mod": "fmodf",
     "pow": "powf",
+    "atan2": "atan2f",
+    "hypot": "hypotf",
 }
 
 _UNARYOP_FUNCS: dict[str, str] = {
@@ -86,6 +95,16 @@ _UNARYOP_FUNCS: dict[str, str] = {
     "atan": "atanf",
     "asin": "asinf",
     "acos": "acosf",
+    "tan": "tanf",
+    "sinh": "sinhf",
+    "cosh": "coshf",
+    "asinh": "asinhf",
+    "acosh": "acoshf",
+    "atanh": "atanhf",
+    "exp2": "exp2f",
+    "log2": "log2f",
+    "log10": "log10f",
+    "trunc": "truncf",
 }
 
 _COMPARE_SYMBOLS: dict[str, str] = {
@@ -94,6 +113,24 @@ _COMPARE_SYMBOLS: dict[str, str] = {
     "gte": ">=",
     "lte": "<=",
     "eq": "==",
+    "neq": "!=",
+}
+
+_NAMED_CONSTANT_VALUES: dict[str, float] = {
+    "pi": _math.pi,
+    "e": _math.e,
+    "twopi": 2.0 * _math.pi,
+    "halfpi": _math.pi / 2.0,
+    "invpi": 1.0 / _math.pi,
+    "degtorad": _math.pi / 180.0,
+    "radtodeg": 180.0 / _math.pi,
+    "sqrt2": _math.sqrt(2.0),
+    "sqrt1_2": _math.sqrt(0.5),
+    "ln2": _math.log(2.0),
+    "ln10": _math.log(10.0),
+    "log2e": _math.log2(_math.e),
+    "log10e": _math.log10(_math.e),
+    "phi": (1.0 + _math.sqrt(5.0)) / 2.0,
 }
 
 
@@ -419,7 +456,7 @@ def _emit_state_reset(node: Node, w: _Writer) -> None:
 # ---------------------------------------------------------------------------
 
 
-_NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode"})
+_NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode", "count", "channel"})
 
 
 def _classify_loop_invariance(
@@ -444,6 +481,21 @@ def _classify_loop_invariance(
             if field_name in _NON_REF_FIELDS:
                 continue
             if isinstance(value, float):
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, float):
+                        continue
+                    if isinstance(item, str):
+                        if item in input_ids:
+                            is_invariant = False
+                            break
+                        if item in param_names or item in invariant_ids:
+                            continue
+                        is_invariant = False
+                        break
+                if not is_invariant:
+                    break
                 continue
             if isinstance(value, str):
                 if value in input_ids:
@@ -778,6 +830,16 @@ def _emit_node_compute(
         if node.op in _BINOP_FUNCS:
             func = _BINOP_FUNCS[node.op]
             w(f"        float {node.id} = {func}({ref(node.a)}, {ref(node.b)});")
+        elif node.op == "absdiff":
+            w(f"        float {node.id} = fabsf({ref(node.a)} - {ref(node.b)});")
+        elif node.op == "step":
+            w(f"        float {node.id} = ({ref(node.a)} >= {ref(node.b)}) ? 1.0f : 0.0f;")
+        elif node.op == "and":
+            w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f && {ref(node.b)} != 0.0f);")
+        elif node.op == "or":
+            w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f || {ref(node.b)} != 0.0f);")
+        elif node.op == "xor":
+            w(f"        float {node.id} = (float)(({ref(node.a)} != 0.0f) != ({ref(node.b)} != 0.0f));")
         else:
             sym = _BINOP_SYMBOLS[node.op]
             w(f"        float {node.id} = {ref(node.a)} {sym} {ref(node.b)};")
@@ -790,6 +852,13 @@ def _emit_node_compute(
             w(
                 f"        float {node.id} = ({a} > 0.0f ? 1.0f : ({a} < 0.0f ? -1.0f : 0.0f));"
             )
+        elif node.op == "fract":
+            a = ref(node.a)
+            w(f"        float {node.id} = {a} - floorf({a});")
+        elif node.op == "not":
+            w(f"        float {node.id} = (float)({ref(node.a)} == 0.0f);")
+        elif node.op == "bool":
+            w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f);")
         else:
             func = _UNARYOP_FUNCS[node.op]
             w(f"        float {node.id} = {func}({ref(node.a)});")
@@ -1085,6 +1154,48 @@ def _emit_node_compute(
         a = ref(node.a)
         w(f"        float {nid} = {a};")
         w(f"        {nid}_value = {nid};")
+
+    elif isinstance(node, Pass):
+        w(f"        float {node.id} = {ref(node.a)};")
+
+    elif isinstance(node, NamedConstant):
+        w(f"        float {node.id} = {_float_lit(_NAMED_CONSTANT_VALUES[node.op])};")
+
+    elif isinstance(node, Smoothstep):
+        nid = node.id
+        a = ref(node.a)
+        e0 = ref(node.edge0)
+        e1 = ref(node.edge1)
+        w(f"        float {nid}_t = fminf(fmaxf(({a} - {e0}) / ({e1} - {e0}), 0.0f), 1.0f);")
+        w(f"        float {nid} = {nid}_t * {nid}_t * (3.0f - 2.0f * {nid}_t);")
+
+    elif isinstance(node, GateRoute):
+        nid = node.id
+        idx = ref(node.index)
+        a = ref(node.a)
+        w(f"        int {nid}_idx = (int)({idx});")
+        w(f"        if ({nid}_idx < 0) {nid}_idx = 0;")
+        w(f"        if ({nid}_idx > {node.count}) {nid}_idx = {node.count};")
+        w(f"        float {nid}_val = {a};")
+
+    elif isinstance(node, GateOut):
+        nid = node.id
+        gate = node.gate
+        w(f"        float {nid} = ({gate}_idx == {node.channel}) ? {gate}_val : 0.0f;")
+
+    elif isinstance(node, Selector):
+        nid = node.id
+        idx = ref(node.index)
+        n = len(node.inputs)
+        w(f"        int {nid}_idx = (int)({idx});")
+        w(f"        if ({nid}_idx < 0) {nid}_idx = 0;")
+        w(f"        if ({nid}_idx > {n}) {nid}_idx = {n};")
+        # Build cascading ternary
+        expr = "0.0f"
+        for i in range(n, 0, -1):
+            input_ref = ref(node.inputs[i - 1])
+            expr = f"{nid}_idx == {i} ? {input_ref} : {expr}"
+        w(f"        float {nid} = {expr};")
 
 
 # ---------------------------------------------------------------------------

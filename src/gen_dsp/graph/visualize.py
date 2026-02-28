@@ -28,12 +28,16 @@ from gen_dsp.graph.models import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Noise,
     OnePole,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -42,7 +46,9 @@ from gen_dsp.graph.models import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     Subgraph,
     TriOsc,
@@ -129,6 +135,18 @@ def _node_attrs(node: object) -> tuple[str, str, str]:
         return "box", "#fde0c8", f"{node.id}\\nsmooth"
     if isinstance(node, Peek):
         return "box", "#d4edda", f"{node.id}\\npeek"
+    if isinstance(node, Pass):
+        return "box", "#fff3cd", f"{node.id}\\npass"
+    if isinstance(node, NamedConstant):
+        return "box", "#e9ecef", f"{node.id}\\n{node.op}"
+    if isinstance(node, Smoothstep):
+        return "box", "#fff3cd", f"{node.id}\\nsmoothstep"
+    if isinstance(node, GateRoute):
+        return "box", "#fff3cd", f"{node.id}\\ngate {node.count}"
+    if isinstance(node, GateOut):
+        return "box", "#fff3cd", f"{node.id}\\ngate_out {node.channel}"
+    if isinstance(node, Selector):
+        return "box", "#fff3cd", f"{node.id}\\nselector"
     if isinstance(node, Subgraph):
         n_in = len(node.graph.inputs)
         n_out = len(node.graph.outputs)
@@ -196,6 +214,11 @@ def graph_to_dot(graph: Graph) -> str:
                 for v in value.values():
                     if isinstance(v, str) and v in all_ids:
                         w(f'    "{v}" -> "{node.id}";')
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item in all_ids:
+                        w(f'    "{item}" -> "{node.id}";')
                 continue
             if not isinstance(value, str) or value not in all_ids:
                 continue

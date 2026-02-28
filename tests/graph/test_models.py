@@ -29,13 +29,17 @@ from gen_dsp.graph import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Noise,
     OnePole,
     Param,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -44,7 +48,9 @@ from gen_dsp.graph import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     Subgraph,
     TriOsc,
@@ -724,6 +730,9 @@ class TestGraphStructure:
                 Scale(id="sc", a="in1"),
                 SmoothParam(id="sp", a="in1", coeff=0.99),
                 Peek(id="pk", a="in1"),
+                Pass(id="ps", a="in1"),
+                NamedConstant(id="nc", op="pi"),
+                Smoothstep(id="ss", a="in1", edge0=0.0, edge1=1.0),
                 Subgraph(
                     id="sg",
                     graph=Graph(
@@ -734,8 +743,161 @@ class TestGraphStructure:
                     ),
                     inputs={"x": "in1"},
                 ),
+                GateRoute(id="gr", a="in1", index=1.0, count=3),
+                GateOut(id="go1", gate="gr", channel=1),
+                Selector(id="mux", index=1.0, inputs=["in1", 0.0]),
             ],
         )
         json_str = g.model_dump_json()
         restored = Graph.model_validate_json(json_str)
-        assert len(restored.nodes) == 39
+        assert len(restored.nodes) == 45
+
+
+# ---------------------------------------------------------------------------
+# New ops and node types (v0.2)
+# ---------------------------------------------------------------------------
+
+
+class TestNewOps:
+    """Construction tests for new UnaryOp, BinOp, Compare ops and new node types."""
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "tan", "sinh", "cosh", "asinh", "acosh", "atanh",
+            "exp2", "log2", "log10", "fract", "trunc", "not", "bool",
+        ],
+    )
+    def test_new_unary_ops(self, op: str) -> None:
+        n = UnaryOp(id="x", op=op, a="in1")
+        assert n.op == op
+
+    @pytest.mark.parametrize("op", ["atan2", "hypot", "absdiff", "step", "and", "or", "xor"])
+    def test_new_binop_ops(self, op: str) -> None:
+        n = BinOp(id="x", op=op, a="in1", b="in2")
+        assert n.op == op
+
+    def test_compare_neq(self) -> None:
+        n = Compare(id="c", op="neq", a="x", b="y")
+        assert n.op == "neq"
+
+    def test_pass_node(self) -> None:
+        n = Pass(id="p", a="in1")
+        assert n.op == "pass"
+        assert n.a == "in1"
+
+    def test_named_constant(self) -> None:
+        n = NamedConstant(id="pi_val", op="pi")
+        assert n.op == "pi"
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "pi", "e", "twopi", "halfpi", "invpi", "degtorad", "radtodeg",
+            "sqrt2", "sqrt1_2", "ln2", "ln10", "log2e", "log10e", "phi",
+        ],
+    )
+    def test_named_constant_all_ops(self, op: str) -> None:
+        n = NamedConstant(id="k", op=op)
+        assert n.op == op
+
+    def test_smoothstep(self) -> None:
+        n = Smoothstep(id="ss", a="in1", edge0=0.0, edge1=1.0)
+        assert n.op == "smoothstep"
+        assert n.edge0 == 0.0
+        assert n.edge1 == 1.0
+
+    def test_new_nodes_json_roundtrip(self) -> None:
+        g = Graph(
+            name="new_v2_types",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ps")],
+            nodes=[
+                Pass(id="ps", a="in1"),
+                NamedConstant(id="pi_val", op="pi"),
+                Smoothstep(id="ss", a="in1", edge0=0.0, edge1=1.0),
+                BinOp(id="hy", op="hypot", a="in1", b=1.0),
+                UnaryOp(id="tn", op="tan", a="in1"),
+                Compare(id="neq_c", op="neq", a="in1", b=0.0),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_new_ops_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {"id": "ps", "op": "pass", "a": 1.0},
+                {"id": "nc", "op": "pi"},
+                {"id": "ss", "op": "smoothstep", "a": 0.5, "edge0": 0.0, "edge1": 1.0},
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], Pass)
+        assert isinstance(g.nodes[1], NamedConstant)
+        assert isinstance(g.nodes[2], Smoothstep)
+
+
+# ---------------------------------------------------------------------------
+# Gate / Selector routing nodes
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingNodes:
+    def test_gate_route(self) -> None:
+        n = GateRoute(id="gr", a="in1", index=1.0, count=3)
+        assert n.op == "gate_route"
+        assert n.a == "in1"
+        assert n.index == 1.0
+        assert n.count == 3
+
+    def test_gate_out(self) -> None:
+        n = GateOut(id="go", gate="gr", channel=2)
+        assert n.op == "gate_out"
+        assert n.gate == "gr"
+        assert n.channel == 2
+
+    def test_selector(self) -> None:
+        n = Selector(id="sel", index=1.0, inputs=["a", "b", "c"])
+        assert n.op == "selector"
+        assert n.index == 1.0
+        assert n.inputs == ["a", "b", "c"]
+
+    def test_selector_with_literal_inputs(self) -> None:
+        n = Selector(id="sel", index=2.0, inputs=["a", 0.5, "c"])
+        assert n.inputs == ["a", 0.5, "c"]
+
+    def test_gate_selector_json_roundtrip(self) -> None:
+        g = Graph(
+            name="routing",
+            inputs=[AudioInput(id="in1")],
+            outputs=[
+                AudioOutput(id="out1", source="go1"),
+                AudioOutput(id="out2", source="mux"),
+            ],
+            nodes=[
+                GateRoute(id="gr", a="in1", index=1.0, count=2),
+                GateOut(id="go1", gate="gr", channel=1),
+                GateOut(id="go2", gate="gr", channel=2),
+                Selector(id="mux", index=1.0, inputs=["go1", "go2"]),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_gate_selector_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {"id": "gr", "op": "gate_route", "a": 1.0, "index": 1.0, "count": 3},
+                {"id": "go", "op": "gate_out", "gate": "gr", "channel": 1},
+                {"id": "sel", "op": "selector", "index": 1.0, "inputs": [1.0, 2.0]},
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], GateRoute)
+        assert isinstance(g.nodes[1], GateOut)
+        assert isinstance(g.nodes[2], Selector)

@@ -5,12 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Graph: Gate and Selector routing nodes** -- three new node types for multi-channel signal routing, matching gen~ `gate` and `selector` operators
+  - `GateRoute` (1-to-N demux): routes a single input to one of N output channels based on a 1-based index (0 = mute all); container node paired with `GateOut` satellites
+  - `GateOut`: reads one channel from a `GateRoute`, outputting the signal when selected or 0.0 otherwise
+  - `Selector` (N-to-1 mux): selects one of N inputs based on a 1-based index (0 = zero output); uses `list[Ref]` for variable-arity inputs
+  - Full support across all graph modules: C++ compilation, Python simulation, validation (gate consistency checks, channel range), optimization (constant folding, CSE, dead-code elimination), DOT visualization, and subgraph expansion
+  - `list[Ref]` field iteration extended in 7 locations (`_deps.py`, `validate.py`, `optimize.py`, `subgraph.py`, `compile.py`, `visualize.py`) to support Selector's variable-arity inputs pattern
+- **Graph: logical BinOp operators** -- `and`, `or`, `xor` added to BinOp (gen~ parity); `not` and `bool` added to UnaryOp
+  - C++ codegen emits `(float)(a != 0.0f && b != 0.0f)` style expressions
+  - Constant folding and simulation support included
+
 ## [0.1.13]
 
 ### Added
 
 - **Graph frontend subpackage** (`gen_dsp.graph`) -- enables testing gen-dsp's platform backends without needing gen~ exports by defining DSP graphs in Python/JSON and compiling them to C++; available via `pip install gen-dsp[graph]`
-  - Pydantic-based graph model with 39 node types (BinOp, SinOsc, OnePole, DelayLine, Buffer, SVF, Biquad, etc.)
+  - Pydantic-based graph model with 42 node types (BinOp, SinOsc, OnePole, DelayLine, Buffer, SVF, Biquad, GateRoute, GateOut, Selector, etc.)
   - `compile_graph()`: compiles Graph to standalone C++ (no genlib dependency)
   - `validate_graph()`: checks graph connectivity and type correctness
   - `optimize_graph()`: dead-code elimination, constant folding

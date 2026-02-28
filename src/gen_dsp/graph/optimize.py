@@ -26,13 +26,17 @@ from gen_dsp.graph.models import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Node,
     Noise,
     OnePole,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -41,7 +45,9 @@ from gen_dsp.graph.models import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     TriOsc,
     UnaryOp,
@@ -97,6 +103,13 @@ _BINOP_EVAL: dict[str, object] = {
     "max": lambda a, b: max(a, b),
     "mod": lambda a, b: math.fmod(a, b) if b != 0.0 else 0.0,
     "pow": lambda a, b: a**b,
+    "atan2": lambda a, b: math.atan2(a, b),
+    "hypot": lambda a, b: math.hypot(a, b),
+    "absdiff": lambda a, b: abs(a - b),
+    "step": lambda a, b: 1.0 if a >= b else 0.0,
+    "and": lambda a, b: 1.0 if (a != 0.0 and b != 0.0) else 0.0,
+    "or": lambda a, b: 1.0 if (a != 0.0 or b != 0.0) else 0.0,
+    "xor": lambda a, b: 1.0 if ((a != 0.0) != (b != 0.0)) else 0.0,
 }
 
 _UNARYOP_EVAL: dict[str, object] = {
@@ -115,6 +128,19 @@ _UNARYOP_EVAL: dict[str, object] = {
     "atan": math.atan,
     "asin": lambda x: math.asin(x) if -1 <= x <= 1 else 0.0,
     "acos": lambda x: math.acos(x) if -1 <= x <= 1 else 0.0,
+    "tan": math.tan,
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "asinh": math.asinh,
+    "acosh": lambda x: math.acosh(x) if x >= 1 else 0.0,
+    "atanh": lambda x: math.atanh(x) if -1 < x < 1 else 0.0,
+    "exp2": lambda x: math.pow(2.0, x),
+    "log2": lambda x: math.log2(x) if x > 0 else float("-inf"),
+    "log10": lambda x: math.log10(x) if x > 0 else float("-inf"),
+    "fract": lambda x: x - math.floor(x),
+    "trunc": math.trunc,
+    "not": lambda x: 1.0 if x == 0.0 else 0.0,
+    "bool": lambda x: 0.0 if x == 0.0 else 1.0,
 }
 
 _COMPARE_EVAL: dict[str, object] = {
@@ -123,6 +149,7 @@ _COMPARE_EVAL: dict[str, object] = {
     "gte": lambda a, b: 1.0 if a >= b else 0.0,
     "lte": lambda a, b: 1.0 if a <= b else 0.0,
     "eq": lambda a, b: 1.0 if a == b else 0.0,
+    "neq": lambda a, b: 1.0 if a != b else 0.0,
 }
 
 
@@ -226,6 +253,50 @@ def _try_fold(node: Node, constants: dict[str, float]) -> float | None:
             return out_lo + (a - in_lo) / in_range * (out_hi - out_lo)
         return None
 
+    if isinstance(node, Pass):
+        a = _resolve_ref(node.a, constants)
+        if a is not None:
+            return a
+        return None
+
+    if isinstance(node, NamedConstant):
+        from gen_dsp.graph.compile import _NAMED_CONSTANT_VALUES
+
+        return _NAMED_CONSTANT_VALUES[node.op]
+
+    if isinstance(node, Smoothstep):
+        a = _resolve_ref(node.a, constants)
+        e0 = _resolve_ref(node.edge0, constants)
+        e1 = _resolve_ref(node.edge1, constants)
+        if a is not None and e0 is not None and e1 is not None:
+            rng = e1 - e0
+            if rng == 0.0:
+                return 0.0
+            t = min(max((a - e0) / rng, 0.0), 1.0)
+            return t * t * (3.0 - 2.0 * t)
+        return None
+
+    if isinstance(node, GateRoute):
+        # Multi-output container -- cannot fold to single constant
+        return None
+
+    if isinstance(node, GateOut):
+        # Could fold if gate's index and value are known, but GateRoute
+        # can't fold, so GateOut won't have constant gate refs in practice.
+        return None
+
+    if isinstance(node, Selector):
+        idx = _resolve_ref(node.index, constants)
+        if idx is None:
+            return None
+        resolved = [_resolve_ref(inp, constants) for inp in node.inputs]
+        if any(v is None for v in resolved):
+            return None
+        n = len(node.inputs)
+        i = int(idx)
+        i = max(0, min(i, n))
+        return resolved[i - 1] if i > 0 else 0.0
+
     return None
 
 
@@ -292,11 +363,15 @@ def eliminate_dead_nodes(graph: Graph) -> Graph:
         if nid not in node_map:
             continue
         node = node_map[nid]
-        # Follow all string fields
+        # Follow all string fields (and list items)
         for field_name, value in node.__dict__.items():
             if field_name in ("id", "op"):
                 continue
-            if isinstance(value, str) and value in node_ids:
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item in node_ids:
+                        worklist.append(item)
+            elif isinstance(value, str) and value in node_ids:
                 worklist.append(value)
         # If this is a DelayRead, also mark the corresponding writers
         if isinstance(node, DelayRead):
@@ -341,6 +416,21 @@ def promote_control_rate(graph: Graph) -> Graph:
                 continue
             if isinstance(value, float):
                 continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, float):
+                        continue
+                    if isinstance(item, str):
+                        if item in input_ids:
+                            is_invariant = False
+                            break
+                        if item in param_names or item in invariant_ids:
+                            continue
+                        is_invariant = False
+                        break
+                if not is_invariant:
+                    break
+                continue
             if isinstance(value, str):
                 if value in input_ids:
                     is_invariant = False
@@ -366,6 +456,22 @@ def promote_control_rate(graph: Graph) -> Graph:
                 continue
             if isinstance(value, float):
                 continue
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, float):
+                        continue
+                    if isinstance(item, str):
+                        if (
+                            item in param_names
+                            or item in invariant_ids
+                            or item in control_set
+                        ):
+                            continue
+                        is_promotable = False
+                        break
+                if not is_promotable:
+                    break
+                continue
             if isinstance(value, str):
                 if (
                     value in param_names
@@ -386,7 +492,7 @@ def promote_control_rate(graph: Graph) -> Graph:
 
 _COMMUTATIVE_OPS = frozenset({"add", "mul", "min", "max"})
 
-_NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode"})
+_NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode", "count", "channel"})
 
 
 def _operand_key(ref: Union[str, float]) -> tuple[int, Union[str, float]]:
@@ -441,16 +547,32 @@ def _cse_key(
             r(node.out_lo),
             r(node.out_hi),
         )
+    if isinstance(node, Pass):
+        return ("pass", r(node.a))
+    if isinstance(node, NamedConstant):
+        return ("namedconstant", node.op)
+    if isinstance(node, Smoothstep):
+        return ("smoothstep", r(node.a), r(node.edge0), r(node.edge1))
+    if isinstance(node, GateRoute):
+        return ("gate_route", r(node.a), r(node.index), node.count)
+    if isinstance(node, GateOut):
+        return ("gate_out", node.gate, node.channel)
+    if isinstance(node, Selector):
+        return ("selector", r(node.index), *tuple(r(inp) for inp in node.inputs))
     return None
 
 
 def _rewrite_refs(node: Node, rewrite: dict[str, str]) -> Node:
     """Return a copy of *node* with string ref fields remapped through *rewrite*."""
-    updates: dict[str, str] = {}
+    updates: dict[str, object] = {}
     for field_name, value in node.__dict__.items():
         if field_name in _NON_REF_FIELDS:
             continue
-        if isinstance(value, str) and value in rewrite:
+        if isinstance(value, list):
+            new_list = [rewrite.get(v, v) if isinstance(v, str) else v for v in value]
+            if new_list != value:
+                updates[field_name] = new_list
+        elif isinstance(value, str) and value in rewrite:
             updates[field_name] = rewrite[value]
     if not updates:
         return node

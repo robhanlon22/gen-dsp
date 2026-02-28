@@ -13,11 +13,14 @@ from gen_dsp.graph import (
     DelayLine,
     DelayRead,
     DelayWrite,
+    GateOut,
+    GateRoute,
     Graph,
     GraphValidationError,
     History,
     OnePole,
     Param,
+    Selector,
     Subgraph,
     validate_graph,
 )
@@ -449,3 +452,79 @@ class TestUnmappedParamWarnings:
         warn_indices = [i for i, e in enumerate(errors) if e.severity == "warning"]
         assert err_indices and warn_indices
         assert max(err_indices) < min(warn_indices)
+
+
+# ---------------------------------------------------------------------------
+# Gate / Selector consistency
+# ---------------------------------------------------------------------------
+
+
+class TestGateConsistency:
+    def test_valid_gate_graph(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="go1")],
+            nodes=[
+                GateRoute(id="gr", a="in1", index=1.0, count=2),
+                GateOut(id="go1", gate="gr", channel=1),
+                GateOut(id="go2", gate="gr", channel=2),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_gate_out_references_nonexistent_gate(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[
+                GateOut(id="go1", gate="missing", channel=1),
+            ],
+        )
+        errors = validate_graph(g)
+        assert any("non-existent gate route 'missing'" in e for e in errors)
+
+    def test_gate_out_channel_out_of_range(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[
+                GateRoute(id="gr", a=1.0, index=1.0, count=2),
+                GateOut(id="go1", gate="gr", channel=3),
+            ],
+        )
+        errors = validate_graph(g)
+        assert any("channel 3 out of range" in e for e in errors)
+
+    def test_gate_out_channel_zero_out_of_range(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[
+                GateRoute(id="gr", a=1.0, index=1.0, count=2),
+                GateOut(id="go1", gate="gr", channel=0),
+            ],
+        )
+        errors = validate_graph(g)
+        assert any("channel 0 out of range" in e for e in errors)
+
+
+class TestSelectorConsistency:
+    def test_valid_selector_graph(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1"), AudioInput(id="in2")],
+            outputs=[AudioOutput(id="out1", source="mux")],
+            nodes=[
+                Selector(id="mux", index=1.0, inputs=["in1", "in2"]),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_selector_dangling_ref_in_inputs(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            nodes=[
+                Selector(id="mux", index=1.0, inputs=["in1", "missing"]),
+            ],
+        )
+        errors = validate_graph(g)
+        assert any("unknown ID 'missing'" in e for e in errors)

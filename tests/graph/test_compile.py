@@ -33,13 +33,17 @@ from gen_dsp.graph import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Noise,
     OnePole,
     Param,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -48,7 +52,9 @@ from gen_dsp.graph import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     TriOsc,
     UnaryOp,
@@ -1528,6 +1534,296 @@ class TestSIMDHints:
             nodes=[
                 BinOp(id="inv", op="sub", a=1.0, b="gain"),
                 BinOp(id="r", op="mul", a="in1", b="inv"),
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ compile failed:\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# New ops and node types (v0.2)
+# ---------------------------------------------------------------------------
+
+
+class TestNewOpsCodegen:
+    """Verify C++ output for new UnaryOp, BinOp, Compare ops and new nodes."""
+
+    @pytest.mark.parametrize(
+        "op,expected",
+        [
+            ("tan", "tanf("),
+            ("sinh", "sinhf("),
+            ("cosh", "coshf("),
+            ("asinh", "asinhf("),
+            ("acosh", "acoshf("),
+            ("atanh", "atanhf("),
+            ("exp2", "exp2f("),
+            ("log2", "log2f("),
+            ("log10", "log10f("),
+            ("trunc", "truncf("),
+        ],
+    )
+    def test_new_unary_func_ops(self, op: str, expected: str) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[UnaryOp(id="x", op=op, a="in1")],
+        )
+        code = compile_graph(g)
+        assert expected in code
+
+    def test_unary_fract(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[UnaryOp(id="x", op="fract", a="in1")],
+        )
+        code = compile_graph(g)
+        assert "floorf(" in code
+
+    def test_unary_not(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[UnaryOp(id="x", op="not", a="in1")],
+        )
+        code = compile_graph(g)
+        assert "== 0.0f" in code
+
+    def test_unary_bool(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[UnaryOp(id="x", op="bool", a="in1")],
+        )
+        code = compile_graph(g)
+        assert "!= 0.0f" in code
+
+    @pytest.mark.parametrize(
+        "op,expected",
+        [
+            ("atan2", "atan2f("),
+            ("hypot", "hypotf("),
+        ],
+    )
+    def test_new_binop_func_ops(self, op: str, expected: str) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op=op, a="in1", b=1.0)],
+        )
+        code = compile_graph(g)
+        assert expected in code
+
+    def test_binop_absdiff(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op="absdiff", a="in1", b=1.0)],
+        )
+        code = compile_graph(g)
+        assert "fabsf(" in code
+
+    def test_binop_step(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op="step", a="in1", b=0.5)],
+        )
+        code = compile_graph(g)
+        assert ">=" in code
+
+    def test_binop_and(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op="and", a="in1", b=1.0)],
+        )
+        code = compile_graph(g)
+        assert "&&" in code
+
+    def test_binop_or(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op="or", a="in1", b=1.0)],
+        )
+        code = compile_graph(g)
+        assert "||" in code
+
+    def test_binop_xor(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[BinOp(id="x", op="xor", a="in1", b=1.0)],
+        )
+        code = compile_graph(g)
+        assert "!=" in code
+
+    def test_compare_neq(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Compare(id="x", op="neq", a="in1", b=0.0)],
+        )
+        code = compile_graph(g)
+        assert "!=" in code
+
+    def test_pass_node(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Pass(id="x", a="in1")],
+        )
+        code = compile_graph(g)
+        assert "float x = in1[i];" in code
+
+    def test_named_constant(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[NamedConstant(id="x", op="pi")],
+        )
+        code = compile_graph(g)
+        assert "3.14159" in code
+
+    def test_smoothstep(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="x")],
+            nodes=[Smoothstep(id="x", a="in1", edge0=0.0, edge1=1.0)],
+        )
+        code = compile_graph(g)
+        assert "fminf(fmaxf(" in code
+        assert "3.0f" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_new_ops_compile_with_gpp(self) -> None:
+        """All new ops produce valid C++ that compiles with g++."""
+        g = Graph(
+            name="new_ops_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ps")],
+            nodes=[
+                UnaryOp(id="u_tan", op="tan", a="in1"),
+                UnaryOp(id="u_sinh", op="sinh", a="in1"),
+                UnaryOp(id="u_cosh", op="cosh", a="in1"),
+                UnaryOp(id="u_asinh", op="asinh", a="in1"),
+                UnaryOp(id="u_acosh", op="acosh", a="in1"),
+                UnaryOp(id="u_atanh", op="atanh", a="in1"),
+                UnaryOp(id="u_exp2", op="exp2", a="in1"),
+                UnaryOp(id="u_log2", op="log2", a="in1"),
+                UnaryOp(id="u_log10", op="log10", a="in1"),
+                UnaryOp(id="u_fract", op="fract", a="in1"),
+                UnaryOp(id="u_trunc", op="trunc", a="in1"),
+                UnaryOp(id="u_not", op="not", a="in1"),
+                UnaryOp(id="u_bool", op="bool", a="in1"),
+                BinOp(id="b_atan2", op="atan2", a="in1", b=1.0),
+                BinOp(id="b_hypot", op="hypot", a="in1", b=1.0),
+                BinOp(id="b_absdiff", op="absdiff", a="in1", b=1.0),
+                BinOp(id="b_step", op="step", a="in1", b=0.5),
+                BinOp(id="b_and", op="and", a="in1", b=1.0),
+                BinOp(id="b_or", op="or", a="in1", b=1.0),
+                BinOp(id="b_xor", op="xor", a="in1", b=1.0),
+                Compare(id="c_neq", op="neq", a="in1", b=0.0),
+                Pass(id="ps", a="in1"),
+                NamedConstant(id="nc_pi", op="pi"),
+                Smoothstep(id="ss", a="in1", edge0=0.0, edge1=1.0),
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Gate / Selector routing nodes
+# ---------------------------------------------------------------------------
+
+
+class TestGateSelectorCodegen:
+    def test_gate_route_codegen(self) -> None:
+        g = Graph(
+            name="gate_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[
+                AudioOutput(id="out1", source="go1"),
+                AudioOutput(id="out2", source="go2"),
+            ],
+            nodes=[
+                GateRoute(id="gr", a="in1", index=1.0, count=2),
+                GateOut(id="go1", gate="gr", channel=1),
+                GateOut(id="go2", gate="gr", channel=2),
+            ],
+        )
+        code = compile_graph(g)
+        assert "int gr_idx = (int)" in code
+        assert "gr_idx > 2" in code
+        assert "float gr_val" in code
+        assert "gr_idx == 1" in code
+        assert "gr_idx == 2" in code
+
+    def test_selector_codegen(self) -> None:
+        g = Graph(
+            name="sel_test",
+            inputs=[AudioInput(id="in1"), AudioInput(id="in2")],
+            outputs=[AudioOutput(id="out1", source="mux")],
+            nodes=[
+                Selector(id="mux", index=1.0, inputs=["in1", "in2"]),
+            ],
+        )
+        code = compile_graph(g)
+        assert "int mux_idx = (int)" in code
+        assert "mux_idx > 2" in code
+        assert "mux_idx == 1" in code
+        assert "mux_idx == 2" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_gate_selector_compiles(self) -> None:
+        g = Graph(
+            name="routing",
+            inputs=[AudioInput(id="in1")],
+            outputs=[
+                AudioOutput(id="out1", source="go1"),
+                AudioOutput(id="out2", source="mux"),
+            ],
+            params=[Param(name="idx", min=0.0, max=3.0, default=1.0)],
+            nodes=[
+                GateRoute(id="gr", a="in1", index="idx", count=3),
+                GateOut(id="go1", gate="gr", channel=1),
+                GateOut(id="go2", gate="gr", channel=2),
+                GateOut(id="go3", gate="gr", channel=3),
+                Selector(id="mux", index="idx", inputs=["go1", "go2", "go3"]),
             ],
         )
         code = compile_graph(g)

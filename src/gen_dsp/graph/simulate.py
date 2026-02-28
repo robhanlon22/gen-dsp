@@ -46,13 +46,17 @@ from gen_dsp.graph.models import (
     DelayWrite,
     Delta,
     Fold,
+    GateOut,
+    GateRoute,
     Graph,
     History,
     Latch,
     Mix,
+    NamedConstant,
     Node,
     Noise,
     OnePole,
+    Pass,
     Peek,
     Phasor,
     PulseOsc,
@@ -61,12 +65,15 @@ from gen_dsp.graph.models import (
     SawOsc,
     Scale,
     Select,
+    Selector,
     SinOsc,
+    Smoothstep,
     SmoothParam,
     TriOsc,
     UnaryOp,
     Wrap,
 )
+from gen_dsp.graph.compile import _NAMED_CONSTANT_VALUES
 from gen_dsp.graph.subgraph import expand_subgraphs
 from gen_dsp.graph.toposort import toposort
 from gen_dsp.graph.validate import validate_graph
@@ -407,6 +414,20 @@ def _compute_node(
             vals[nid] = math.fmod(a, b) if b != 0.0 else 0.0
         elif node.op == "pow":
             vals[nid] = math.pow(a, b)
+        elif node.op == "atan2":
+            vals[nid] = math.atan2(a, b)
+        elif node.op == "hypot":
+            vals[nid] = math.hypot(a, b)
+        elif node.op == "absdiff":
+            vals[nid] = abs(a - b)
+        elif node.op == "step":
+            vals[nid] = 1.0 if a >= b else 0.0
+        elif node.op == "and":
+            vals[nid] = 1.0 if (a != 0.0 and b != 0.0) else 0.0
+        elif node.op == "or":
+            vals[nid] = 1.0 if (a != 0.0 or b != 0.0) else 0.0
+        elif node.op == "xor":
+            vals[nid] = 1.0 if ((a != 0.0) != (b != 0.0)) else 0.0
 
     elif isinstance(node, UnaryOp):
         a = ref(node.a)
@@ -440,6 +461,32 @@ def _compute_node(
             vals[nid] = math.asin(max(-1.0, min(1.0, a)))
         elif node.op == "acos":
             vals[nid] = math.acos(max(-1.0, min(1.0, a)))
+        elif node.op == "tan":
+            vals[nid] = math.tan(a)
+        elif node.op == "sinh":
+            vals[nid] = math.sinh(a)
+        elif node.op == "cosh":
+            vals[nid] = math.cosh(a)
+        elif node.op == "asinh":
+            vals[nid] = math.asinh(a)
+        elif node.op == "acosh":
+            vals[nid] = math.acosh(a) if a >= 1.0 else 0.0
+        elif node.op == "atanh":
+            vals[nid] = math.atanh(a) if -1.0 < a < 1.0 else 0.0
+        elif node.op == "exp2":
+            vals[nid] = math.pow(2.0, a)
+        elif node.op == "log2":
+            vals[nid] = math.log2(a) if a > 0.0 else float("-inf")
+        elif node.op == "log10":
+            vals[nid] = math.log10(a) if a > 0.0 else float("-inf")
+        elif node.op == "fract":
+            vals[nid] = a - math.floor(a)
+        elif node.op == "trunc":
+            vals[nid] = math.trunc(a)
+        elif node.op == "not":
+            vals[nid] = 1.0 if a == 0.0 else 0.0
+        elif node.op == "bool":
+            vals[nid] = 0.0 if a == 0.0 else 1.0
 
     elif isinstance(node, Clamp):
         a, lo, hi = ref(node.a), ref(node.lo), ref(node.hi)
@@ -510,6 +557,8 @@ def _compute_node(
             vals[nid] = 1.0 if a <= b else 0.0
         elif node.op == "eq":
             vals[nid] = 1.0 if a == b else 0.0
+        elif node.op == "neq":
+            vals[nid] = 1.0 if a != b else 0.0
 
     elif isinstance(node, Select):
         cond = ref(node.cond)
@@ -764,6 +813,36 @@ def _compute_node(
         a = ref(node.a)
         vals[nid] = a
         state._state[f"{nid}.value"] = a
+
+    elif isinstance(node, Pass):
+        vals[nid] = ref(node.a)
+
+    elif isinstance(node, NamedConstant):
+        vals[nid] = _NAMED_CONSTANT_VALUES[node.op]
+
+    elif isinstance(node, Smoothstep):
+        a = ref(node.a)
+        e0 = ref(node.edge0)
+        e1 = ref(node.edge1)
+        rng = e1 - e0
+        t = min(max((a - e0) / rng if rng != 0.0 else 0.0, 0.0), 1.0)
+        vals[nid] = t * t * (3.0 - 2.0 * t)
+
+    elif isinstance(node, GateRoute):
+        idx = int(ref(node.index))
+        idx = max(0, min(idx, node.count))
+        vals[f"{nid}._idx"] = idx
+        vals[f"{nid}._val"] = ref(node.a)
+
+    elif isinstance(node, GateOut):
+        idx = vals[f"{node.gate}._idx"]
+        val = vals[f"{node.gate}._val"]
+        vals[nid] = val if idx == node.channel else 0.0
+
+    elif isinstance(node, Selector):
+        idx = int(ref(node.index))
+        idx = max(0, min(idx, len(node.inputs)))
+        vals[nid] = ref(node.inputs[idx - 1]) if idx > 0 else 0.0
 
 
 # ---------------------------------------------------------------------------
