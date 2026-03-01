@@ -11,6 +11,7 @@ import pytest
 
 from gen_dsp.graph import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     AudioInput,
@@ -26,18 +27,22 @@ from gen_dsp.graph import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Noise,
     OnePole,
@@ -48,16 +53,20 @@ from gen_dsp.graph import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     Subgraph,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 from gen_dsp.graph.simulate import SimResult, SimState, simulate
@@ -1457,14 +1466,20 @@ class TestSelector:
 
     def test_selector_index_clamps_to_n(self) -> None:
         g = self._selector_graph(2)
-        ins = {"in1": np.array([10.0], dtype=np.float32), "in2": np.array([20.0], dtype=np.float32)}
+        ins = {
+            "in1": np.array([10.0], dtype=np.float32),
+            "in2": np.array([20.0], dtype=np.float32),
+        }
         res = simulate(g, inputs=ins, params={"idx": 5.0}, sample_rate=SR)
         # Clamped to 2 -> selects in2
         assert float(res.outputs["out1"][0]) == pytest.approx(20.0)
 
     def test_selector_negative_index_clamps_to_zero(self) -> None:
         g = self._selector_graph(2)
-        ins = {"in1": np.array([10.0], dtype=np.float32), "in2": np.array([20.0], dtype=np.float32)}
+        ins = {
+            "in1": np.array([10.0], dtype=np.float32),
+            "in2": np.array([20.0], dtype=np.float32),
+        }
         res = simulate(g, inputs=ins, params={"idx": -1.0}, sample_rate=SR)
         assert float(res.outputs["out1"][0]) == 0.0
 
@@ -1486,3 +1501,662 @@ class TestSelector:
         )
         res = simulate(g, n_samples=1, params={"idx": 2.0}, sample_rate=SR)
         assert float(res.outputs["out1"][0]) == pytest.approx(99.0)
+
+
+# ---------------------------------------------------------------------------
+# Slide, SampleRate, convert ops
+# ---------------------------------------------------------------------------
+
+
+class TestSlideSimulate:
+    def test_slide_instant_tracking(self) -> None:
+        """With up=1 and down=1, output should track input instantly."""
+        g = Graph(
+            name="slide_instant",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=1.0, down=1.0)],
+        )
+        inp = np.array([1.0, 0.5, 0.0, -1.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        np.testing.assert_allclose(res.outputs["out1"], inp, atol=1e-6)
+
+    def test_slide_asymmetric_slew(self) -> None:
+        """With large slide values, output should slew towards the input."""
+        g = Graph(
+            name="slide_slew",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=100.0, down=100.0)],
+        )
+        # Step from 0 to 1: output should ramp up slowly
+        inp = np.ones(10, dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        out = res.outputs["out1"]
+        # First sample: prev=0, x=1, s=100 -> 0 + (1-0)/100 = 0.01
+        assert float(out[0]) == pytest.approx(0.01, abs=1e-4)
+        # Output should be monotonically increasing
+        for i in range(1, len(out)):
+            assert float(out[i]) > float(out[i - 1])
+
+    def test_slide_sub_one_clamped(self) -> None:
+        """Slide values < 1 should be clamped to 1 (instant tracking)."""
+        g = Graph(
+            name="slide_clamp",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=0.0, down=0.0)],
+        )
+        inp = np.array([1.0, 0.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        np.testing.assert_allclose(res.outputs["out1"], inp, atol=1e-6)
+
+
+class TestSampleRateSimulate:
+    def test_samplerate_returns_sr(self) -> None:
+        g = Graph(
+            name="sr_test",
+            outputs=[AudioOutput(id="out1", source="sr_node")],
+            nodes=[SampleRate(id="sr_node")],
+        )
+        res = simulate(g, n_samples=4, sample_rate=48000.0)
+        expected = np.full(4, 48000.0, dtype=np.float32)
+        np.testing.assert_allclose(res.outputs["out1"], expected)
+
+
+class TestConvertOpsSimulate:
+    def test_mtof_a440(self) -> None:
+        g = Graph(
+            name="mtof_test",
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op="mtof", a=69.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(440.0, rel=1e-5)
+
+    def test_ftom_440(self) -> None:
+        g = Graph(
+            name="ftom_test",
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op="ftom", a=440.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(69.0, rel=1e-5)
+
+    def test_atodb_unity(self) -> None:
+        g = Graph(
+            name="atodb_test",
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op="atodb", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0, abs=1e-5)
+
+    def test_dbtoa_zero(self) -> None:
+        g = Graph(
+            name="dbtoa_test",
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op="dbtoa", a=0.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0, rel=1e-5)
+
+    def test_mtof_ftom_roundtrip(self) -> None:
+        g = Graph(
+            name="roundtrip",
+            outputs=[AudioOutput(id="out1", source="back")],
+            nodes=[
+                UnaryOp(id="freq", op="mtof", a=60.0),
+                UnaryOp(id="back", op="ftom", a="freq"),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(60.0, rel=1e-5)
+
+    def test_atodb_dbtoa_roundtrip(self) -> None:
+        g = Graph(
+            name="roundtrip_db",
+            outputs=[AudioOutput(id="out1", source="back")],
+            nodes=[
+                UnaryOp(id="db", op="atodb", a=0.5),
+                UnaryOp(id="back", op="dbtoa", a="db"),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.5, rel=1e-5)
+
+
+class TestElapsedSimulate:
+    def test_elapsed_counts_samples(self) -> None:
+        g = Graph(
+            name="elapsed_test",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[Elapsed(id="el")],
+        )
+        res = simulate(g, n_samples=5, sample_rate=SR)
+        expected = np.array([0.0, 1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        np.testing.assert_allclose(res.outputs["out1"], expected)
+
+    def test_elapsed_reset(self) -> None:
+        g = Graph(
+            name="elapsed_test",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[Elapsed(id="el")],
+        )
+        res1 = simulate(g, n_samples=3, sample_rate=SR)
+        assert float(res1.outputs["out1"][2]) == pytest.approx(2.0)
+        # simulate again from scratch
+        res2 = simulate(g, n_samples=3, sample_rate=SR)
+        assert float(res2.outputs["out1"][0]) == pytest.approx(0.0)
+
+
+class TestMulAccumSimulate:
+    def test_mulaccum_basic(self) -> None:
+        g = Graph(
+            name="ma_test",
+            outputs=[AudioOutput(id="out1", source="ma")],
+            nodes=[MulAccum(id="ma", incr=2.0, reset=0.0)],
+        )
+        res = simulate(g, n_samples=4, sample_rate=SR)
+        # prod starts at 1.0, multiplied by 2 each sample: 2, 4, 8, 16
+        expected = np.array([2.0, 4.0, 8.0, 16.0], dtype=np.float32)
+        np.testing.assert_allclose(res.outputs["out1"], expected)
+
+    def test_mulaccum_with_reset(self) -> None:
+        g = Graph(
+            name="ma_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ma")],
+            nodes=[MulAccum(id="ma", incr=2.0, reset="in1")],
+        )
+        # reset > 0 on sample 2
+        inp = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        # sample 0: prod=1*2=2, sample 1: 2*2=4
+        # sample 2: reset -> prod=1, then *2=2
+        # sample 3: 2*2=4
+        expected = np.array([2.0, 4.0, 2.0, 4.0], dtype=np.float32)
+        np.testing.assert_allclose(res.outputs["out1"], expected)
+
+
+class TestPhasewrapSimulate:
+    def test_phasewrap_values(self) -> None:
+        g = Graph(
+            name="pw_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="pw")],
+            nodes=[UnaryOp(id="pw", op="phasewrap", a="in1")],
+        )
+        twopi = 2.0 * math.pi
+        inp = np.array([0.0, math.pi, twopi, -twopi, 3 * math.pi], dtype=np.float32)
+        res = simulate(g, inputs={"in1": inp}, sample_rate=SR)
+        out = res.outputs["out1"]
+        assert float(out[0]) == pytest.approx(0.0, abs=1e-5)
+        # pi is at the boundary; float32 may give +pi or -pi (both correct)
+        assert abs(float(out[1])) == pytest.approx(math.pi, abs=1e-4)
+        assert abs(float(out[2])) < 1e-4  # 2pi wraps to ~0
+        assert abs(float(out[3])) < 1e-4  # -2pi wraps to ~0
+        assert abs(float(out[4])) == pytest.approx(
+            math.pi, abs=1e-4
+        )  # 3pi wraps to +/-pi
+
+
+class TestCycleSimulate:
+    def test_cycle_reads_buffer(self) -> None:
+        g = Graph(
+            name="cy_test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                BufWrite(id="bw0", buffer="buf", index=0.0, value=10.0),
+                BufWrite(id="bw1", buffer="buf", index=1.0, value=20.0),
+                BufWrite(id="bw2", buffer="buf", index=2.0, value=30.0),
+                BufWrite(id="bw3", buffer="buf", index=3.0, value=40.0),
+                Cycle(id="cy", buffer="buf", phase=0.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # phase=0.0 should read index 0
+        assert float(res.outputs["out1"][0]) == pytest.approx(10.0, rel=1e-4)
+
+    def test_cycle_wraps_phase(self) -> None:
+        g = Graph(
+            name="cy_test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                BufWrite(id="bw0", buffer="buf", index=0.0, value=100.0),
+                Cycle(id="cy", buffer="buf", phase=1.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # phase=1.0 wraps to 0.0
+        assert float(res.outputs["out1"][0]) == pytest.approx(100.0, rel=1e-4)
+
+    def test_buffer_fill_sine(self) -> None:
+        """Buffer with fill='sine' should be pre-filled with a sine cycle."""
+        g = Graph(
+            name="fill_test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=512, fill="sine"),
+                # phase=0.25 -> quarter cycle -> should read ~1.0 (sin(pi/2))
+                Cycle(id="cy", buffer="buf", phase=0.25),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0, abs=0.02)
+
+    def test_buffer_fill_sine_zero_crossing(self) -> None:
+        """phase=0.0 and phase=0.5 should both be ~0.0."""
+        g = Graph(
+            name="fill_test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=512, fill="sine"),
+                Cycle(id="cy", buffer="buf", phase=0.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0, abs=0.02)
+
+
+class TestWaveSimulate:
+    def test_wave_reads_center(self) -> None:
+        g = Graph(
+            name="wv_test",
+            outputs=[AudioOutput(id="out1", source="wv")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                BufWrite(id="bw0", buffer="buf", index=0.0, value=10.0),
+                BufWrite(id="bw1", buffer="buf", index=1.0, value=20.0),
+                BufWrite(id="bw2", buffer="buf", index=2.0, value=30.0),
+                BufWrite(id="bw3", buffer="buf", index=3.0, value=40.0),
+                Wave(id="wv", buffer="buf", phase=0.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # phase=0 maps to center of buffer (index 2)
+        assert float(res.outputs["out1"][0]) == pytest.approx(30.0, abs=5.0)
+
+
+class TestLookupSimulate:
+    def test_lookup_reads_start(self) -> None:
+        g = Graph(
+            name="lu_test",
+            outputs=[AudioOutput(id="out1", source="lu")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                BufWrite(id="bw0", buffer="buf", index=0.0, value=10.0),
+                BufWrite(id="bw1", buffer="buf", index=1.0, value=20.0),
+                BufWrite(id="bw2", buffer="buf", index=2.0, value=30.0),
+                BufWrite(id="bw3", buffer="buf", index=3.0, value=40.0),
+                Lookup(id="lu", buffer="buf", index=0.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # index=0.0 maps to buffer start
+        assert float(res.outputs["out1"][0]) == pytest.approx(10.0, rel=1e-4)
+
+    def test_lookup_reads_end(self) -> None:
+        g = Graph(
+            name="lu_test",
+            outputs=[AudioOutput(id="out1", source="lu")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                BufWrite(id="bw0", buffer="buf", index=0.0, value=10.0),
+                BufWrite(id="bw3", buffer="buf", index=3.0, value=40.0),
+                Lookup(id="lu", buffer="buf", index=1.0),
+            ],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # index=1.0 maps to last sample
+        assert float(res.outputs["out1"][0]) == pytest.approx(40.0, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# P. Batch 3: reverse ops, p-comparisons, angle/sample convert, DSP safety,
+#             fast approx, splat
+# ---------------------------------------------------------------------------
+
+
+class TestBatch3Simulate:
+    """Correctness tests for batch 3 operators."""
+
+    def test_rsub(self) -> None:
+        g = Graph(
+            name="rsub_test",
+            outputs=[AudioOutput(id="out1", source="rsb")],
+            nodes=[BinOp(id="rsb", op="rsub", a=3.0, b=5.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(2.0)
+
+    def test_rdiv(self) -> None:
+        g = Graph(
+            name="rdiv_test",
+            outputs=[AudioOutput(id="out1", source="rdv")],
+            nodes=[BinOp(id="rdv", op="rdiv", a=2.0, b=10.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(5.0)
+
+    def test_rmod(self) -> None:
+        g = Graph(
+            name="rmod_test",
+            outputs=[AudioOutput(id="out1", source="rmd")],
+            nodes=[BinOp(id="rmd", op="rmod", a=3.0, b=7.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+
+    def test_gtp_pass(self) -> None:
+        g = Graph(
+            name="gtp_test",
+            outputs=[AudioOutput(id="out1", source="gtp_n")],
+            nodes=[BinOp(id="gtp_n", op="gtp", a=5.0, b=3.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(5.0)
+
+    def test_gtp_zero(self) -> None:
+        g = Graph(
+            name="gtp_test",
+            outputs=[AudioOutput(id="out1", source="gtp_n")],
+            nodes=[BinOp(id="gtp_n", op="gtp", a=2.0, b=3.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0)
+
+    def test_ltp(self) -> None:
+        g = Graph(
+            name="ltp_test",
+            outputs=[AudioOutput(id="out1", source="ltp_n")],
+            nodes=[BinOp(id="ltp_n", op="ltp", a=2.0, b=3.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(2.0)
+
+    def test_eqp(self) -> None:
+        g = Graph(
+            name="eqp_test",
+            outputs=[AudioOutput(id="out1", source="eqp_n")],
+            nodes=[BinOp(id="eqp_n", op="eqp", a=3.0, b=3.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(3.0)
+
+    def test_neqp(self) -> None:
+        g = Graph(
+            name="neqp_test",
+            outputs=[AudioOutput(id="out1", source="neqp_n")],
+            nodes=[BinOp(id="neqp_n", op="neqp", a=3.0, b=5.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(3.0)
+
+    def test_fastpow(self) -> None:
+        g = Graph(
+            name="fastpow_test",
+            outputs=[AudioOutput(id="out1", source="fp")],
+            nodes=[BinOp(id="fp", op="fastpow", a=3.0, b=2.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(9.0)
+
+    def test_degrees(self) -> None:
+        g = Graph(
+            name="deg_test",
+            outputs=[AudioOutput(id="out1", source="deg")],
+            nodes=[UnaryOp(id="deg", op="degrees", a=math.pi)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(180.0, rel=1e-4)
+
+    def test_radians(self) -> None:
+        g = Graph(
+            name="rad_test",
+            outputs=[AudioOutput(id="out1", source="rad")],
+            nodes=[UnaryOp(id="rad", op="radians", a=180.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.pi, rel=1e-4)
+
+    def test_mstosamps(self) -> None:
+        g = Graph(
+            name="ms2s_test",
+            outputs=[AudioOutput(id="out1", source="ms2s")],
+            nodes=[UnaryOp(id="ms2s", op="mstosamps", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=44100.0)
+        assert float(res.outputs["out1"][0]) == pytest.approx(44.1, rel=1e-4)
+
+    def test_sampstoms(self) -> None:
+        g = Graph(
+            name="s2ms_test",
+            outputs=[AudioOutput(id="out1", source="s2ms")],
+            nodes=[UnaryOp(id="s2ms", op="sampstoms", a=44.1)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=44100.0)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0, rel=1e-4)
+
+    def test_t60(self) -> None:
+        g = Graph(
+            name="t60_test",
+            outputs=[AudioOutput(id="out1", source="t")],
+            nodes=[UnaryOp(id="t", op="t60", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=44100.0)
+        expected = math.exp(-6.9078 / (1.0 * 44100.0))
+        assert float(res.outputs["out1"][0]) == pytest.approx(expected, rel=1e-4)
+
+    def test_t60time(self) -> None:
+        # t60time is the inverse of t60: given a decay coefficient, compute time
+        # Use the coefficient from t60(1.0) at 44100 Hz, should return ~1.0
+        coeff = math.exp(-6.9078 / (1.0 * 44100.0))
+        g = Graph(
+            name="t60time_test",
+            outputs=[AudioOutput(id="out1", source="t")],
+            nodes=[UnaryOp(id="t", op="t60time", a=coeff)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=44100.0)
+        expected = -6.9078 / (math.log(coeff) * 44100.0)
+        assert float(res.outputs["out1"][0]) == pytest.approx(expected, rel=1e-4)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0, rel=1e-4)
+
+    def test_fixdenorm_normal(self) -> None:
+        g = Graph(
+            name="fd_test",
+            outputs=[AudioOutput(id="out1", source="fd")],
+            nodes=[UnaryOp(id="fd", op="fixdenorm", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+
+    def test_fixdenorm_tiny(self) -> None:
+        g = Graph(
+            name="fd_test",
+            outputs=[AudioOutput(id="out1", source="fd")],
+            nodes=[UnaryOp(id="fd", op="fixdenorm", a=1e-39)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0)
+
+    def test_isdenorm(self) -> None:
+        g = Graph(
+            name="isd_test",
+            outputs=[AudioOutput(id="out1", source="isd")],
+            nodes=[UnaryOp(id="isd", op="isdenorm", a=1e-39)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(1.0)
+
+    def test_isdenorm_normal(self) -> None:
+        g = Graph(
+            name="isd_test",
+            outputs=[AudioOutput(id="out1", source="isd")],
+            nodes=[UnaryOp(id="isd", op="isdenorm", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0)
+
+    def test_fastsin_approx(self) -> None:
+        g = Graph(
+            name="fs_test",
+            outputs=[AudioOutput(id="out1", source="fs")],
+            nodes=[UnaryOp(id="fs", op="fastsin", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        # Simulation uses exact math.sin
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.sin(1.0), rel=1e-4)
+
+    def test_fastcos_approx(self) -> None:
+        g = Graph(
+            name="fc_test",
+            outputs=[AudioOutput(id="out1", source="fc")],
+            nodes=[UnaryOp(id="fc", op="fastcos", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.cos(1.0), rel=1e-4)
+
+    def test_fastexp_approx(self) -> None:
+        g = Graph(
+            name="fe_test",
+            outputs=[AudioOutput(id="out1", source="fe")],
+            nodes=[UnaryOp(id="fe", op="fastexp", a=1.0)],
+        )
+        res = simulate(g, n_samples=1, sample_rate=SR)
+        assert float(res.outputs["out1"][0]) == pytest.approx(math.exp(1.0), rel=1e-4)
+
+    def test_splat_accumulates(self) -> None:
+        """Splat adds to buffer instead of overwriting."""
+        g = Graph(
+            name="splat_test",
+            outputs=[AudioOutput(id="out1", source="br")],
+            nodes=[
+                Buffer(id="buf", size=4),
+                Splat(id="sp", buffer="buf", index=0.0, value=1.0),
+                BufRead(id="br", buffer="buf", index=0.0),
+            ],
+        )
+        # Run 4 samples, each adds 1.0 to buf[0]
+        res = simulate(g, n_samples=4, sample_rate=SR)
+        # BufRead has no topo dep on Splat -- it reads *before* write in same sample
+        # So output lags by one sample: sample 0 reads 0, sample 1 reads 1, etc.
+        assert float(res.outputs["out1"][0]) == pytest.approx(0.0)
+        assert float(res.outputs["out1"][1]) == pytest.approx(1.0)
+        assert float(res.outputs["out1"][2]) == pytest.approx(2.0)
+        assert float(res.outputs["out1"][3]) == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# ADSR envelope tests
+# ---------------------------------------------------------------------------
+
+
+class TestADSRSimulation:
+    """Test ADSR envelope generator simulation."""
+
+    def _make_adsr_graph(
+        self,
+        attack_ms: float = 10.0,
+        decay_ms: float = 100.0,
+        sustain: float = 0.7,
+        release_ms: float = 200.0,
+    ) -> Graph:
+        return Graph(
+            name="adsr_sim",
+            outputs=[AudioOutput(id="out1", source="env")],
+            params=[Param(name="gate")],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate="gate",
+                    attack=attack_ms,
+                    decay=decay_ms,
+                    sustain=sustain,
+                    release=release_ms,
+                ),
+            ],
+        )
+
+    def test_idle_output_zero(self) -> None:
+        """Gate=0, output should stay at 0."""
+        g = self._make_adsr_graph()
+        res = simulate(g, n_samples=100, sample_rate=SR)
+        assert float(res.outputs["out1"][-1]) == 0.0
+
+    def test_attack_ramp(self) -> None:
+        """Gate on -> output should ramp up during attack."""
+        g = self._make_adsr_graph(attack_ms=10.0)
+        state = SimState(g, sample_rate=SR)
+        state.set_param("gate", 1.0)
+        res = simulate(g, n_samples=100, state=state, sample_rate=SR)
+        out = res.outputs["out1"]
+        # After 1 sample, output should be > 0
+        assert float(out[1]) > 0.0
+        # Output should be monotonically increasing during attack
+        for i in range(1, min(50, len(out) - 1)):
+            if float(out[i]) >= 1.0:
+                break
+            assert float(out[i + 1]) >= float(out[i])
+
+    def test_full_adsr_cycle(self) -> None:
+        """Full A->D->S->R->idle cycle."""
+        # Use very short times at 1000 Hz sample rate for quick testing
+        sr = 1000.0
+        g = self._make_adsr_graph(
+            attack_ms=10.0, decay_ms=20.0, sustain=0.5, release_ms=10.0
+        )
+        state = SimState(g, sample_rate=sr)
+
+        # Attack + decay + sustain: gate on for 100 samples
+        state.set_param("gate", 1.0)
+        res = simulate(g, n_samples=100, state=state, sample_rate=sr)
+        out = res.outputs["out1"]
+
+        # Attack: 10ms at 1000Hz = 10 samples, rate=0.1/sample.
+        # Sample 0: edge detect + first increment -> 0.1
+        # Sample 9: reaches 1.0, enters decay
+        assert float(out[9]) == pytest.approx(1.0, abs=0.01)
+
+        # After decay (10+20=30 samples), should be near sustain (0.5)
+        assert float(out[30]) == pytest.approx(0.5, abs=0.05)
+
+        # Sustain: should hold at 0.5
+        assert float(out[50]) == pytest.approx(0.5, abs=0.01)
+
+        # Release: gate off
+        state.set_param("gate", 0.0)
+        res2 = simulate(g, n_samples=50, state=state, sample_rate=sr)
+        out2 = res2.outputs["out1"]
+
+        # After release (10ms = 10 samples at sr=1000), output should reach 0
+        # Release ramps from 0.5 at rate 1.0/10 = 0.1/sample, so 5 samples to reach 0
+        assert float(out2[6]) == pytest.approx(0.0, abs=0.01)
+
+    def test_retrigger_mid_release(self) -> None:
+        """Retrigger during release should resume attack from current level."""
+        sr = 1000.0
+        g = self._make_adsr_graph(
+            attack_ms=10.0, decay_ms=20.0, sustain=0.5, release_ms=100.0
+        )
+        state = SimState(g, sample_rate=sr)
+
+        # Gate on, run through attack to sustain
+        state.set_param("gate", 1.0)
+        simulate(g, n_samples=50, state=state, sample_rate=sr)
+
+        # Gate off, start release
+        state.set_param("gate", 0.0)
+        res = simulate(g, n_samples=10, state=state, sample_rate=sr)
+        release_level = float(res.outputs["out1"][-1])
+        assert release_level < 0.5  # Should be decreasing
+        assert release_level > 0.0  # Not yet at 0
+
+        # Retrigger: gate on again
+        state.set_param("gate", 1.0)
+        res2 = simulate(g, n_samples=2, state=state, sample_rate=sr)
+        retrig_level = float(res2.outputs["out1"][1])
+        # Should continue from current output level, not restart from 0
+        assert retrig_level > release_level

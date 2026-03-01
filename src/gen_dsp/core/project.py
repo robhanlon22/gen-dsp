@@ -118,6 +118,13 @@ class ProjectConfig:
 
         return errors
 
+    @staticmethod
+    def list_platforms() -> list[str]:
+        """Return sorted list of available platform identifiers."""
+        from gen_dsp.platforms import list_platforms
+
+        return list_platforms()
+
 
 class ProjectGenerator:
     """Generate new project from gen~ export or dsp-graph."""
@@ -300,6 +307,21 @@ class ProjectGenerator:
         # 4. Generate gen_buffer.h
         _generate_buffer_header(output_dir)
 
+        # 5. Compute MIDI mapping
+        from gen_dsp.core.midi import build_midi_defines, detect_midi_mapping
+
+        self.config.midi_mapping = detect_midi_mapping(
+            manifest,
+            no_midi=self.config.no_midi,
+            midi_gate=self.config.midi_gate,
+            midi_freq=self.config.midi_freq,
+            midi_vel=self.config.midi_vel,
+            midi_freq_unit=self.config.midi_freq_unit,
+        )
+        if self.config.midi_mapping.enabled and self.config.num_voices > 1:
+            self.config.midi_mapping.num_voices = self.config.num_voices
+        midi_defines = build_midi_defines(self.config.midi_mapping)
+
         # 6. Copy platform-specific buffer header if exists
         import gen_dsp.templates as templates
 
@@ -309,6 +331,37 @@ class ProjectGenerator:
             buf_header = tmpl_dir / f"{platform}_buffer.h"
             if buf_header.is_file():
                 shutil.copy2(buf_header, output_dir / f"{platform}_buffer.h")
+
+        # 6b. Generate Info.plist for AudioUnit
+        if platform == "au":
+            from string import Template as StrTemplate
+
+            from gen_dsp.platforms.audiounit import AudioUnitPlatform
+            from gen_dsp.platforms.base import PluginCategory
+
+            category = PluginCategory.from_num_inputs(manifest.num_inputs)
+            au_type = AudioUnitPlatform._AU_TYPE_MAP[category]
+            if self.config.midi_mapping and self.config.midi_mapping.enabled:
+                au_type = AudioUnitPlatform.AU_TYPE_MUSIC_DEVICE
+            au_subtype = self.config.name.lower()[:4].ljust(4, "x")
+
+            import gen_dsp.templates as templates
+
+            au_tmpl_dir = templates.get_au_templates_dir()
+            plist_template_path = au_tmpl_dir / "Info.plist.template"
+            if plist_template_path.is_file():
+                plist_content = plist_template_path.read_text(encoding="utf-8")
+                plist = StrTemplate(plist_content).safe_substitute(
+                    lib_name=self.config.name,
+                    genext_version=Platform.GENEXT_VERSION,
+                    au_type=au_type,
+                    au_subtype=au_subtype,
+                    au_manufacturer=AudioUnitPlatform.AU_MANUFACTURER,
+                    au_version=AudioUnitPlatform._version_to_int(
+                        Platform.GENEXT_VERSION
+                    ),
+                )
+                (output_dir / "Info.plist").write_text(plist, encoding="utf-8")
 
         # 7. Generate simplified build file
         generate_graph_build_file(
@@ -321,6 +374,7 @@ class ProjectGenerator:
             num_params=manifest.num_params,
             genext_version=Platform.GENEXT_VERSION,
             shared_cache=self.config.shared_cache,
+            midi_defines=midi_defines,
         )
 
         # 8. Write manifest.json

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from gen_dsp.graph.models import Graph, Node, Subgraph
 
-_NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode", "output", "count", "channel"})
+_NON_REF_FIELDS = frozenset(
+    {"id", "op", "interp", "mode", "output", "count", "channel"}
+)
 
 
 def expand_subgraphs(graph: Graph) -> Graph:
@@ -158,7 +160,9 @@ def _rewrite_node(
         if field_name in _NON_REF_FIELDS:
             continue
         if isinstance(value, list):
-            new_list = [rewrite_map.get(v, v) if isinstance(v, str) else v for v in value]
+            new_list = [
+                rewrite_map.get(v, v) if isinstance(v, str) else v for v in value
+            ]
             if new_list != value:
                 updates[field_name] = new_list
         elif isinstance(value, str) and value in rewrite_map:
@@ -177,7 +181,9 @@ def _rewrite_refs(node: Node, output_map: dict[str, str]) -> Node:
         if field_name in _NON_REF_FIELDS:
             continue
         if isinstance(value, list):
-            new_list = [output_map.get(v, v) if isinstance(v, str) else v for v in value]
+            new_list = [
+                output_map.get(v, v) if isinstance(v, str) else v for v in value
+            ]
             if new_list != value:
                 updates[field_name] = new_list
         elif isinstance(value, str) and value in output_map:

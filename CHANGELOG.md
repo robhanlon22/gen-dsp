@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Graph: ADSR envelope node** -- `ADSR` node type for attack-decay-sustain-release envelope generation with gate-triggered edge detection, linear ramp phases (times in ms), retrigger from current level, and min 1-sample clamp to avoid division by zero. Full support across compile (C++ codegen), simulate (Python), optimize (stateful -- never folded), and visualize (DOT)
+- **Graph: MIDI wiring in graph project path** -- `_generate_from_graph()` now runs `detect_midi_mapping()` and passes `midi_defines` to `generate_graph_build_file()`, enabling auto-detection of MIDI gate/freq/vel params for graph-based projects (e.g., fm_synth with `gate` + `freq` params generates CLAP/VST3 with MIDI enabled)
 - **Graph: Gate and Selector routing nodes** -- three new node types for multi-channel signal routing, matching gen~ `gate` and `selector` operators
   - `GateRoute` (1-to-N demux): routes a single input to one of N output channels based on a 1-based index (0 = mute all); container node paired with `GateOut` satellites
   - `GateOut`: reads one channel from a `GateRoute`, outputting the signal when selected or 0.0 otherwise
@@ -18,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Graph: logical BinOp operators** -- `and`, `or`, `xor` added to BinOp (gen~ parity); `not` and `bool` added to UnaryOp
   - C++ codegen emits `(float)(a != 0.0f && b != 0.0f)` style expressions
   - Constant folding and simulation support included
+- **Graph: batch 3 operators (27 ops)** -- adds reverse math, "p" comparisons, angle conversion, sample/ms conversion, decay coefficient, DSP safety, fast approximations, and buffer overdub to reach ~89% gen~ operator coverage
+  - Reverse math: `rsub`, `rdiv`, `rmod` (BinOp) -- reverse-argument variants of sub/div/mod
+  - "p" comparisons: `gtp`, `ltp`, `gtep`, `ltep`, `eqp`, `neqp` (BinOp) -- return input value when condition is true, 0 otherwise (distinct from Compare which returns 1/0)
+  - Angle conversion: `degrees`, `radians` (UnaryOp)
+  - Sample/ms conversion: `mstosamps`, `sampstoms` (UnaryOp) -- sample-rate dependent, cannot be constant-folded
+  - Decay coefficient: `t60` (UnaryOp) -- `exp(-6.9078/(a*sr))`, sample-rate dependent; `t60time` -- inverse decay time estimation `-6.9078/(log(a)*sr)`
+  - DSP safety: `fixdenorm`, `fixnan`, `isdenorm`, `isnan` (UnaryOp)
+  - Fast approximations: `fastsin`, `fastcos`, `fasttan`, `fastexp` (UnaryOp), `fastpow` (BinOp) -- C++ uses Bhaskara I (sin/cos), Schraudolph's method (exp), `exp2f(b*log2f(a))` (pow); simulation uses exact math
+  - `Splat` node type: buffer overdub (`buf[idx] += value`), same pattern as BufWrite but additive
+  - Full support across all modules: codegen, simulation, validation, optimization (constant folding with sr-dependent exclusions, dead-code elimination), DOT visualization
+- **Graph: new examples** -- four new example scripts demonstrating expanded graph vocabulary
+  - `waveshaper.py` -- lookup table waveshaping with `Lookup`, `Buffer`, `Slide`, `Scale`, `fixdenorm`
+  - `allpass_reverb.py` -- Schroeder-style reverb with `Allpass`, `DCBlock`, `t60`, `mstosamps`, `fixdenorm`, `rsub`
+  - `signal_router.py` -- signal routing with `GateRoute`/`GateOut` (1-to-N demux) and `Selector` (N-to-1 mux)
+  - `fm_synth.py` -- two-operator FM synthesis with `Cycle` wavetable oscillators and `Phasor`
 
 ## [0.1.13]
 

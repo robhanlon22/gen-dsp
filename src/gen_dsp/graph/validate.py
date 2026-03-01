@@ -8,6 +8,7 @@ from gen_dsp.graph.models import (
     BufRead,
     BufSize,
     BufWrite,
+    Cycle,
     DelayLine,
     DelayRead,
     DelayWrite,
@@ -15,7 +16,10 @@ from gen_dsp.graph.models import (
     GateRoute,
     Graph,
     History,
+    Lookup,
+    Splat,
     Subgraph,
+    Wave,
 )
 from gen_dsp.graph.optimize import _STATEFUL_TYPES
 
@@ -161,7 +165,16 @@ def validate_graph(
     all_ids = set(node_ids) | all_sources
 
     # String fields that are enum selectors, not node references
-    _NON_REF_FIELDS = {"id", "op", "interp", "mode", "output", "count", "channel"}
+    _NON_REF_FIELDS = {
+        "id",
+        "op",
+        "interp",
+        "mode",
+        "output",
+        "count",
+        "channel",
+        "fill",
+    }
 
     # 2. Reference resolution -- every str input resolves to a known ID
     for node in graph.nodes:
@@ -247,11 +260,47 @@ def validate_graph(
                     field_name="buffer",
                 )
             )
+        if isinstance(node, Splat) and node.buffer not in buffer_ids:
+            errors.append(
+                GraphValidationError(
+                    "missing_buffer",
+                    f"Splat '{node.id}' references non-existent buffer '{node.buffer}'",
+                    node_id=node.id,
+                    field_name="buffer",
+                )
+            )
         if isinstance(node, BufSize) and node.buffer not in buffer_ids:
             errors.append(
                 GraphValidationError(
                     "missing_buffer",
                     f"BufSize '{node.id}' references non-existent buffer '{node.buffer}'",
+                    node_id=node.id,
+                    field_name="buffer",
+                )
+            )
+        if isinstance(node, Cycle) and node.buffer not in buffer_ids:
+            errors.append(
+                GraphValidationError(
+                    "missing_buffer",
+                    f"Cycle '{node.id}' references non-existent buffer '{node.buffer}'",
+                    node_id=node.id,
+                    field_name="buffer",
+                )
+            )
+        if isinstance(node, Wave) and node.buffer not in buffer_ids:
+            errors.append(
+                GraphValidationError(
+                    "missing_buffer",
+                    f"Wave '{node.id}' references non-existent buffer '{node.buffer}'",
+                    node_id=node.id,
+                    field_name="buffer",
+                )
+            )
+        if isinstance(node, Lookup) and node.buffer not in buffer_ids:
+            errors.append(
+                GraphValidationError(
+                    "missing_buffer",
+                    f"Lookup '{node.id}' references non-existent buffer '{node.buffer}'",
                     node_id=node.id,
                     field_name="buffer",
                 )

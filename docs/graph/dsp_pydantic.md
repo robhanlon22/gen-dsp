@@ -48,7 +48,10 @@ class AudioOutput(BaseModel):
 class BinOp(BaseModel):
     """Arithmetic binary operator."""
     id: str
-    op: Literal["add", "sub", "mul", "div", "min", "max", "mod", "pow"]
+    op: Literal["add", "sub", "mul", "div", "min", "max", "mod", "pow",
+                "rsub", "rdiv", "rmod", "absdiff", "hypot", "atan2", "step",
+                "and", "or", "xor",
+                "gtp", "ltp", "gtep", "ltep", "eqp", "neqp", "fastpow"]
     a: str | float              # node ID or literal
     b: str | float
 
@@ -57,7 +60,13 @@ class UnaryOp(BaseModel):
     """Math function applied to a single input."""
     id: str
     op: Literal["sin", "cos", "tanh", "exp", "log", "abs", "sqrt",
-                "neg", "floor", "ceil", "round", "sign", "atan", "asin", "acos"]
+                "neg", "floor", "ceil", "round", "sign", "atan", "asin", "acos",
+                "not", "bool", "exp2", "log2", "log10",
+                "sinh", "cosh", "asinh", "acosh", "atanh", "trunc", "fract",
+                "atodb", "dbtoa", "ftom", "mtof", "phasewrap",
+                "degrees", "radians", "mstosamps", "sampstoms", "t60", "t60time",
+                "fixdenorm", "fixnan", "isdenorm", "isnan",
+                "fastsin", "fastcos", "fasttan", "fastexp"]
     a: str | float
 
 
@@ -123,9 +132,11 @@ class Noise(BaseModel):
 
 
 # ... plus SawOsc, TriOsc, PulseOsc, SVF, Biquad, OnePole, DCBlock,
-#     Allpass, Buffer, BufRead, BufWrite, BufSize, Compare, Select,
-#     Wrap, Fold, Mix, Scale, Delta, Change, SampleHold, Latch,
-#     Accum, Counter, RateDiv, SmoothParam, Peek, Constant, Subgraph
+#     Allpass, Buffer, BufRead, BufWrite, Splat, BufSize, Cycle, Wave,
+#     Lookup, Compare, Select, GateRoute, GateOut, Selector, Smoothstep,
+#     Wrap, Fold, Mix, Scale, Delta, Change, SampleHold, Latch, Slide,
+#     Accum, Counter, MulAccum, Elapsed, RateDiv, SmoothParam, Peek,
+#     Constant, NamedConstant, SampleRate, Pass, Subgraph
 
 
 # Discriminated union of all node types
@@ -155,16 +166,17 @@ class Graph(BaseModel):
 
 | Category | Nodes | State |
 |----------|-------|-------|
-| Arithmetic | `BinOp`, `UnaryOp`, `Clamp`, `Constant` | none |
-| Comparison | `Compare`, `Select` | none |
-| Range | `Wrap`, `Fold`, `Mix`, `Scale` | none |
+| Arithmetic | `BinOp`, `UnaryOp`, `Clamp`, `Constant`, `NamedConstant` | none |
+| Comparison | `Compare`, `Select`, `GateRoute`, `GateOut`, `Selector` | none (GateRoute: stateless) |
+| Range | `Wrap`, `Fold`, `Mix`, `Scale`, `Smoothstep` | none |
 | Delay | `DelayLine`, `DelayRead`, `DelayWrite` | N samples (circular buffer) |
 | Feedback | `History` | 1 sample |
-| Buffer | `Buffer`, `BufRead`, `BufWrite`, `BufSize` | N samples (random access) |
-| Filters | `Biquad`, `SVF`, `OnePole`, `DCBlock`, `Allpass` | 1-4 samples |
+| Buffer | `Buffer`, `BufRead`, `BufWrite`, `Splat`, `BufSize`, `Cycle`, `Wave`, `Lookup` | N samples (random access) |
+| Filters | `Biquad`, `SVF`, `OnePole`, `DCBlock`, `Allpass`, `Slide` | 1-4 samples |
 | Oscillators | `Phasor`, `SinOsc`, `TriOsc`, `SawOsc`, `PulseOsc`, `Noise` | 1 sample (phase/seed) |
-| State | `Delta`, `Change`, `SampleHold`, `Latch`, `Accum`, `Counter`, `RateDiv` | 1-2 samples |
+| State | `Delta`, `Change`, `SampleHold`, `Latch`, `Accum`, `Counter`, `MulAccum`, `Elapsed`, `RateDiv` | 1-2 samples |
 | Control | `SmoothParam` | 1 sample |
+| Environment | `SampleRate`, `Pass` | none |
 | Debug | `Peek` | 1 sample |
 | Composition | `Subgraph` | varies |
 
@@ -386,7 +398,7 @@ code = compile_graph(graph)  # complete C++ string
 | IR format | C++ (opaque) | JSON (inspectable, transformable) |
 | Compiler | gen~ (closed source) | `gen_dsp.graph` (open, extensible) |
 | Host wrappers | gen-dsp platform backends | Same gen-dsp platform backends |
-| Operator set | gen~ vocabulary | 38 node types (extensible) |
+| Operator set | gen~ vocabulary | 53 node types (~89% gen~ coverage) |
 | Simulation | N/A | Python/numpy (`simulate()`) |
 
 The JSON IR is the key artifact: it's diffable, version-controllable, and machine-transformable. Both paths produce the same `wrapper_*` C++ interface, so all 11 gen-dsp platform backends work identically regardless of which frontend was used.

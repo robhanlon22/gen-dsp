@@ -48,9 +48,17 @@ def make_graph() -> Graph:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-p", "--platform", required=True, help="Target platform (clap, vst3, au, ...)")
+    parser.add_argument("-p", "--platform", default=None, help="Target platform (clap, vst3, au, ...)")
+    parser.add_argument("-l", "--list", action="store_true", help="List available platforms")
+    parser.add_argument("-b", "--build", action="store_true", help="Build after generating")
     parser.add_argument("-o", "--output", type=Path, default=None)
     args = parser.parse_args()
+
+    if args.list:
+        print("Available platforms:", ", ".join(ProjectConfig.list_platforms()))
+        return
+    if not args.platform:
+        parser.error("-p/--platform is required (use -l to list available platforms)")
 
     graph = make_graph()
     output = args.output or Path(f"build/examples/{graph.name}_{args.platform}")
@@ -59,7 +67,12 @@ def main() -> None:
     project_dir = gen.generate(output_dir=output)
 
     print(f"Project generated at: {project_dir}")
-    print(f"Build with: cd {project_dir} && cmake -B build && cmake --build build")
+    if args.build:
+        from gen_dsp.core.builder import Builder
+        result = Builder(project_dir).build(args.platform, verbose=True)
+        print(f"Build {'succeeded' if result.success else 'failed'}: {result}")
+    else:
+        print(f"Build with: cd {project_dir} && cmake -B build && cmake --build build")
 
 
 if __name__ == "__main__":

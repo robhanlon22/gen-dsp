@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from gen_dsp.graph import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     AudioInput,
@@ -23,18 +24,22 @@ from gen_dsp.graph import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Noise,
     OnePole,
@@ -45,16 +50,20 @@ from gen_dsp.graph import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     Subgraph,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 
@@ -281,6 +290,18 @@ class TestNodeConstruction:
     def test_buffer_default_size(self) -> None:
         n = Buffer(id="buf")
         assert n.size == 48000
+
+    def test_buffer_fill_default(self) -> None:
+        n = Buffer(id="buf", size=512)
+        assert n.fill == "zeros"
+
+    def test_buffer_fill_sine(self) -> None:
+        n = Buffer(id="buf", size=512, fill="sine")
+        assert n.fill == "sine"
+        d = n.model_dump()
+        assert d["fill"] == "sine"
+        restored = Buffer.model_validate(d)
+        assert restored.fill == "sine"
 
     def test_bufread(self) -> None:
         n = BufRead(id="br", buffer="buf", index=0.0)
@@ -746,11 +767,27 @@ class TestGraphStructure:
                 GateRoute(id="gr", a="in1", index=1.0, count=3),
                 GateOut(id="go1", gate="gr", channel=1),
                 Selector(id="mux", index=1.0, inputs=["in1", 0.0]),
+                Slide(id="sl", a="in1", up=10.0, down=20.0),
+                SampleRate(id="srn"),
+                Elapsed(id="el"),
+                MulAccum(id="ma", incr=1.0, reset=0.0),
+                Cycle(id="cy", buffer="buf", phase=0.0),
+                Wave(id="wv", buffer="buf", phase=0.0),
+                Lookup(id="lu", buffer="buf", index=0.5),
+                Splat(id="sp2", buffer="buf", index=0.0, value=0.0),
+                ADSR(
+                    id="adsr1",
+                    gate="in1",
+                    attack=10.0,
+                    decay=100.0,
+                    sustain=0.7,
+                    release=200.0,
+                ),
             ],
         )
         json_str = g.model_dump_json()
         restored = Graph.model_validate_json(json_str)
-        assert len(restored.nodes) == 45
+        assert len(restored.nodes) == 54
 
 
 # ---------------------------------------------------------------------------
@@ -764,15 +801,28 @@ class TestNewOps:
     @pytest.mark.parametrize(
         "op",
         [
-            "tan", "sinh", "cosh", "asinh", "acosh", "atanh",
-            "exp2", "log2", "log10", "fract", "trunc", "not", "bool",
+            "tan",
+            "sinh",
+            "cosh",
+            "asinh",
+            "acosh",
+            "atanh",
+            "exp2",
+            "log2",
+            "log10",
+            "fract",
+            "trunc",
+            "not",
+            "bool",
         ],
     )
     def test_new_unary_ops(self, op: str) -> None:
         n = UnaryOp(id="x", op=op, a="in1")
         assert n.op == op
 
-    @pytest.mark.parametrize("op", ["atan2", "hypot", "absdiff", "step", "and", "or", "xor"])
+    @pytest.mark.parametrize(
+        "op", ["atan2", "hypot", "absdiff", "step", "and", "or", "xor"]
+    )
     def test_new_binop_ops(self, op: str) -> None:
         n = BinOp(id="x", op=op, a="in1", b="in2")
         assert n.op == op
@@ -793,8 +843,20 @@ class TestNewOps:
     @pytest.mark.parametrize(
         "op",
         [
-            "pi", "e", "twopi", "halfpi", "invpi", "degtorad", "radtodeg",
-            "sqrt2", "sqrt1_2", "ln2", "ln10", "log2e", "log10e", "phi",
+            "pi",
+            "e",
+            "twopi",
+            "halfpi",
+            "invpi",
+            "degtorad",
+            "radtodeg",
+            "sqrt2",
+            "sqrt1_2",
+            "ln2",
+            "ln10",
+            "log2e",
+            "log10e",
+            "phi",
         ],
     )
     def test_named_constant_all_ops(self, op: str) -> None:
@@ -901,3 +963,289 @@ class TestRoutingNodes:
         assert isinstance(g.nodes[0], GateRoute)
         assert isinstance(g.nodes[1], GateOut)
         assert isinstance(g.nodes[2], Selector)
+
+
+# ---------------------------------------------------------------------------
+# Slide, SampleRate, convert ops
+# ---------------------------------------------------------------------------
+
+
+class TestSlideAndSampleRate:
+    def test_slide_construction(self) -> None:
+        n = Slide(id="sl", a="in1", up=10.0, down=20.0)
+        assert n.op == "slide"
+        assert n.a == "in1"
+        assert n.up == 10.0
+        assert n.down == 20.0
+
+    def test_samplerate_construction(self) -> None:
+        n = SampleRate(id="sr_node")
+        assert n.op == "samplerate"
+
+    @pytest.mark.parametrize("op", ["mtof", "ftom", "atodb", "dbtoa"])
+    def test_convert_unary_ops(self, op: str) -> None:
+        n = UnaryOp(id="x", op=op, a="in1")
+        assert n.op == op
+
+    def test_slide_samplerate_json_roundtrip(self) -> None:
+        g = Graph(
+            name="slide_sr",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[
+                SampleRate(id="sr_node"),
+                Slide(id="sl", a="in1", up=10.0, down=20.0),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_slide_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {"id": "sl", "op": "slide", "a": 1.0, "up": 10.0, "down": 20.0},
+                {"id": "sr", "op": "samplerate"},
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], Slide)
+        assert isinstance(g.nodes[1], SampleRate)
+
+
+# ---------------------------------------------------------------------------
+# Elapsed, MulAccum, phasewrap, Buffer variants
+# ---------------------------------------------------------------------------
+
+
+class TestBatch2Ops:
+    def test_elapsed_construction(self) -> None:
+        n = Elapsed(id="el")
+        assert n.op == "elapsed"
+
+    def test_mulaccum_construction(self) -> None:
+        n = MulAccum(id="ma", incr=2.0, reset=0.0)
+        assert n.op == "mulaccum"
+        assert n.incr == 2.0
+        assert n.reset == 0.0
+
+    def test_phasewrap_unary(self) -> None:
+        n = UnaryOp(id="pw", op="phasewrap", a="in1")
+        assert n.op == "phasewrap"
+
+    def test_cycle_construction(self) -> None:
+        n = Cycle(id="cy", buffer="buf", phase=0.5)
+        assert n.op == "cycle"
+        assert n.buffer == "buf"
+        assert n.phase == 0.5
+
+    def test_wave_construction(self) -> None:
+        n = Wave(id="wv", buffer="buf", phase=0.0)
+        assert n.op == "wave"
+        assert n.buffer == "buf"
+        assert n.phase == 0.0
+
+    def test_lookup_construction(self) -> None:
+        n = Lookup(id="lu", buffer="buf", index=0.5)
+        assert n.op == "lookup"
+        assert n.buffer == "buf"
+        assert n.index == 0.5
+
+    def test_batch2_json_roundtrip(self) -> None:
+        g = Graph(
+            name="batch2_types",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Elapsed(id="el"),
+                MulAccum(id="ma", incr=1.0, reset=0.0),
+                Cycle(id="cy", buffer="buf", phase=0.0),
+                Wave(id="wv", buffer="buf", phase=0.0),
+                Lookup(id="lu", buffer="buf", index=0.5),
+                UnaryOp(id="pw", op="phasewrap", a=1.0),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_batch2_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {"id": "el", "op": "elapsed"},
+                {"id": "ma", "op": "mulaccum", "incr": 1.0, "reset": 0.0},
+                {"id": "cy", "op": "cycle", "buffer": "buf", "phase": 0.0},
+                {"id": "wv", "op": "wave", "buffer": "buf", "phase": 0.0},
+                {"id": "lu", "op": "lookup", "buffer": "buf", "index": 0.5},
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], Elapsed)
+        assert isinstance(g.nodes[1], MulAccum)
+        assert isinstance(g.nodes[2], Cycle)
+        assert isinstance(g.nodes[3], Wave)
+        assert isinstance(g.nodes[4], Lookup)
+
+
+# ---------------------------------------------------------------------------
+# Batch 3: reverse ops, "p" comparisons, angle/sample convert, DSP safety,
+#           fast approx, splat
+# ---------------------------------------------------------------------------
+
+
+class TestBatch3Ops:
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "rsub",
+            "rdiv",
+            "rmod",
+            "gtp",
+            "ltp",
+            "gtep",
+            "ltep",
+            "eqp",
+            "neqp",
+            "fastpow",
+        ],
+    )
+    def test_new_binop_ops(self, op: str) -> None:
+        n = BinOp(id="x", op=op, a="in1", b="in2")
+        assert n.op == op
+
+    @pytest.mark.parametrize(
+        "op",
+        [
+            "degrees",
+            "radians",
+            "mstosamps",
+            "sampstoms",
+            "t60",
+            "t60time",
+            "fixdenorm",
+            "fixnan",
+            "isdenorm",
+            "isnan",
+            "fastsin",
+            "fastcos",
+            "fasttan",
+            "fastexp",
+        ],
+    )
+    def test_new_unary_ops(self, op: str) -> None:
+        n = UnaryOp(id="x", op=op, a="in1")
+        assert n.op == op
+
+    def test_splat_construction(self) -> None:
+        n = Splat(id="sp", buffer="buf", index=0.0, value=1.0)
+        assert n.op == "splat"
+        assert n.buffer == "buf"
+        assert n.index == 0.0
+        assert n.value == 1.0
+
+    def test_batch3_json_roundtrip(self) -> None:
+        g = Graph(
+            name="batch3_types",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="rsb")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BinOp(id="rsb", op="rsub", a="in1", b=1.0),
+                BinOp(id="gtp_n", op="gtp", a="in1", b=0.0),
+                UnaryOp(id="deg", op="degrees", a="in1"),
+                UnaryOp(id="ms2s", op="mstosamps", a="in1"),
+                UnaryOp(id="fd", op="fixdenorm", a="in1"),
+                UnaryOp(id="fs", op="fastsin", a="in1"),
+                Splat(id="sp", buffer="buf", index=0.0, value="in1"),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_splat_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {
+                    "id": "sp",
+                    "op": "splat",
+                    "buffer": "buf",
+                    "index": 0.0,
+                    "value": 1.0,
+                },
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], Splat)
+
+
+# ---------------------------------------------------------------------------
+# ADSR envelope node
+# ---------------------------------------------------------------------------
+
+
+class TestADSR:
+    def test_adsr_construction(self) -> None:
+        n = ADSR(
+            id="env", gate="g", attack=10.0, decay=100.0, sustain=0.7, release=200.0
+        )
+        assert n.op == "adsr"
+        assert n.gate == "g"
+        assert n.attack == 10.0
+        assert n.decay == 100.0
+        assert n.sustain == 0.7
+        assert n.release == 200.0
+
+    def test_adsr_with_refs(self) -> None:
+        n = ADSR(
+            id="env",
+            gate="gate_param",
+            attack="atk",
+            decay="dec",
+            sustain="sus",
+            release="rel",
+        )
+        assert n.gate == "gate_param"
+        assert n.attack == "atk"
+
+    def test_adsr_json_roundtrip(self) -> None:
+        g = Graph(
+            name="adsr_test",
+            outputs=[AudioOutput(id="out1", source="env")],
+            params=[Param(name="gate")],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate="gate",
+                    attack=10.0,
+                    decay=100.0,
+                    sustain=0.7,
+                    release=200.0,
+                ),
+            ],
+        )
+        json_str = g.model_dump_json()
+        restored = Graph.model_validate_json(json_str)
+        assert restored == g
+
+    def test_adsr_from_json(self) -> None:
+        raw = {
+            "name": "test",
+            "nodes": [
+                {
+                    "id": "env",
+                    "op": "adsr",
+                    "gate": 1.0,
+                    "attack": 10.0,
+                    "decay": 100.0,
+                    "sustain": 0.7,
+                    "release": 200.0,
+                },
+            ],
+        }
+        g = Graph.model_validate(raw)
+        assert isinstance(g.nodes[0], ADSR)
+        assert g.nodes[0].sustain == 0.7

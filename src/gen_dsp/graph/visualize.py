@@ -9,6 +9,7 @@ from pathlib import Path
 from gen_dsp.graph._deps import is_feedback_edge
 from gen_dsp.graph.models import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     BinOp,
@@ -26,14 +27,18 @@ from gen_dsp.graph.models import (
     DelayLine,
     DelayRead,
     DelayWrite,
+    Cycle,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Noise,
     OnePole,
@@ -43,16 +48,20 @@ from gen_dsp.graph.models import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     Subgraph,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 
@@ -125,20 +134,38 @@ def _node_attrs(node: object) -> tuple[str, str, str]:
         return "box", "#fde0c8", f"{node.id}\\nbuf_read"
     if isinstance(node, BufWrite):
         return "box", "#fde0c8", f"{node.id}\\nbuf_write"
+    if isinstance(node, Splat):
+        return "box", "#fde0c8", f"{node.id}\\nsplat"
     if isinstance(node, BufSize):
         return "box", "#fde0c8", f"{node.id}\\nbuf_size"
+    if isinstance(node, Cycle):
+        return "box", "#fde0c8", f"{node.id}\\ncycle"
+    if isinstance(node, Wave):
+        return "box", "#fde0c8", f"{node.id}\\nwave"
+    if isinstance(node, Lookup):
+        return "box", "#fde0c8", f"{node.id}\\nlookup"
+    if isinstance(node, Elapsed):
+        return "box", "#fde0c8", f"{node.id}\\nelapsed"
+    if isinstance(node, MulAccum):
+        return "box", "#fde0c8", f"{node.id}\\nmulaccum"
     if isinstance(node, RateDiv):
         return "box", "#fde0c8", f"{node.id}\\nrate_div"
     if isinstance(node, Scale):
         return "box", "#fff3cd", f"{node.id}\\nscale"
     if isinstance(node, SmoothParam):
         return "box", "#fde0c8", f"{node.id}\\nsmooth"
+    if isinstance(node, Slide):
+        return "box", "#fde0c8", f"{node.id}\\nslide"
+    if isinstance(node, ADSR):
+        return "box", "#fde0c8", f"{node.id}\\nadsr"
     if isinstance(node, Peek):
         return "box", "#d4edda", f"{node.id}\\npeek"
     if isinstance(node, Pass):
         return "box", "#fff3cd", f"{node.id}\\npass"
     if isinstance(node, NamedConstant):
         return "box", "#e9ecef", f"{node.id}\\n{node.op}"
+    if isinstance(node, SampleRate):
+        return "box", "#e9ecef", f"{node.id}\\nsamplerate"
     if isinstance(node, Smoothstep):
         return "box", "#fff3cd", f"{node.id}\\nsmoothstep"
     if isinstance(node, GateRoute):

@@ -27,6 +27,7 @@ except ImportError as exc:
 
 from gen_dsp.graph.models import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     BinOp,
@@ -40,18 +41,22 @@ from gen_dsp.graph.models import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Node,
     Noise,
@@ -62,15 +67,19 @@ from gen_dsp.graph.models import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 from gen_dsp.graph.compile import _NAMED_CONSTANT_VALUES
@@ -129,15 +138,30 @@ class SimState:
             elif isinstance(node, Counter):
                 self._state[f"{nid}.count"] = 0
                 self._state[f"{nid}.ptrig"] = 0.0
+            elif isinstance(node, Elapsed):
+                self._state[f"{nid}.count"] = 0
+            elif isinstance(node, MulAccum):
+                self._state[f"{nid}.prod"] = 1.0
             elif isinstance(node, RateDiv):
                 self._state[f"{nid}.count"] = 0
                 self._state[f"{nid}.held"] = 0.0
             elif isinstance(node, SmoothParam):
                 self._state[f"{nid}.prev"] = 0.0
+            elif isinstance(node, Slide):
+                self._state[f"{nid}.prev"] = 0.0
+            elif isinstance(node, ADSR):
+                self._state[f"{nid}.phase"] = 0
+                self._state[f"{nid}.output"] = 0.0
+                self._state[f"{nid}.ptrig"] = 0.0
             elif isinstance(node, Peek):
                 self._state[f"{nid}.value"] = 0.0
             elif isinstance(node, Buffer):
-                self._state[f"{nid}.buf"] = np.zeros(node.size, dtype=np.float32)
+                buf = np.zeros(node.size, dtype=np.float32)
+                if node.fill == "sine":
+                    buf[:] = np.sin(
+                        2.0 * np.pi * np.arange(node.size, dtype=np.float32) / node.size
+                    ).astype(np.float32)
+                self._state[f"{nid}.buf"] = buf
                 self._state[f"{nid}.len"] = node.size
 
     def reset(self) -> None:
@@ -173,16 +197,31 @@ class SimState:
             elif isinstance(node, Counter):
                 self._state[f"{nid}.count"] = 0
                 self._state[f"{nid}.ptrig"] = 0.0
+            elif isinstance(node, Elapsed):
+                self._state[f"{nid}.count"] = 0
+            elif isinstance(node, MulAccum):
+                self._state[f"{nid}.prod"] = 1.0
             elif isinstance(node, RateDiv):
                 self._state[f"{nid}.count"] = 0
                 self._state[f"{nid}.held"] = 0.0
             elif isinstance(node, SmoothParam):
                 self._state[f"{nid}.prev"] = 0.0
+            elif isinstance(node, Slide):
+                self._state[f"{nid}.prev"] = 0.0
+            elif isinstance(node, ADSR):
+                self._state[f"{nid}.phase"] = 0
+                self._state[f"{nid}.output"] = 0.0
+                self._state[f"{nid}.ptrig"] = 0.0
             elif isinstance(node, Peek):
                 self._state[f"{nid}.value"] = 0.0
             elif isinstance(node, Buffer):
                 buf = self._state[f"{nid}.buf"]
-                buf[:] = 0.0
+                if node.fill == "sine":
+                    buf[:] = np.sin(
+                        2.0 * np.pi * np.arange(node.size, dtype=np.float32) / node.size
+                    ).astype(np.float32)
+                else:
+                    buf[:] = 0.0
 
     def set_param(self, name: str, value: float) -> None:
         """Set a parameter value. Raises KeyError if name is unknown."""
@@ -428,6 +467,26 @@ def _compute_node(
             vals[nid] = 1.0 if (a != 0.0 or b != 0.0) else 0.0
         elif node.op == "xor":
             vals[nid] = 1.0 if ((a != 0.0) != (b != 0.0)) else 0.0
+        elif node.op == "rsub":
+            vals[nid] = b - a
+        elif node.op == "rdiv":
+            vals[nid] = b / a if a != 0.0 else 0.0
+        elif node.op == "rmod":
+            vals[nid] = math.fmod(b, a) if a != 0.0 else 0.0
+        elif node.op == "gtp":
+            vals[nid] = a if a > b else 0.0
+        elif node.op == "ltp":
+            vals[nid] = a if a < b else 0.0
+        elif node.op == "gtep":
+            vals[nid] = a if a >= b else 0.0
+        elif node.op == "ltep":
+            vals[nid] = a if a <= b else 0.0
+        elif node.op == "eqp":
+            vals[nid] = a if a == b else 0.0
+        elif node.op == "neqp":
+            vals[nid] = a if a != b else 0.0
+        elif node.op == "fastpow":
+            vals[nid] = math.pow(a, b)
 
     elif isinstance(node, UnaryOp):
         a = ref(node.a)
@@ -487,6 +546,51 @@ def _compute_node(
             vals[nid] = 1.0 if a == 0.0 else 0.0
         elif node.op == "bool":
             vals[nid] = 0.0 if a == 0.0 else 1.0
+        elif node.op == "mtof":
+            vals[nid] = 440.0 * math.pow(2.0, (a - 69.0) / 12.0)
+        elif node.op == "ftom":
+            vals[nid] = 69.0 + 12.0 * math.log2(max(a, 1e-10) / 440.0)
+        elif node.op == "atodb":
+            vals[nid] = 20.0 * math.log10(max(a, 1e-10))
+        elif node.op == "dbtoa":
+            vals[nid] = math.pow(10.0, a / 20.0)
+        elif node.op == "phasewrap":
+            twopi = 2.0 * math.pi
+            vals[nid] = a - twopi * math.floor(a / twopi + 0.5)
+        elif node.op == "degrees":
+            vals[nid] = a * (180.0 / math.pi)
+        elif node.op == "radians":
+            vals[nid] = a * (math.pi / 180.0)
+        elif node.op == "mstosamps":
+            vals[nid] = a * state.sr / 1000.0
+        elif node.op == "sampstoms":
+            vals[nid] = a * 1000.0 / state.sr
+        elif node.op == "t60":
+            vals[nid] = (
+                math.exp(-6.9078 / (a * state.sr)) if a * state.sr != 0.0 else 0.0
+            )
+        elif node.op == "t60time":
+            vals[nid] = (
+                -6.9078 / (math.log(a) * state.sr)
+                if a > 0.0 and a != 1.0 and state.sr != 0.0
+                else 0.0
+            )
+        elif node.op == "fixdenorm":
+            vals[nid] = 0.0 if abs(a) < 1e-18 else a
+        elif node.op == "fixnan":
+            vals[nid] = 0.0 if math.isnan(a) else a
+        elif node.op == "isdenorm":
+            vals[nid] = 1.0 if (abs(a) < 1e-18 and a != 0.0) else 0.0
+        elif node.op == "isnan":
+            vals[nid] = 1.0 if math.isnan(a) else 0.0
+        elif node.op == "fastsin":
+            vals[nid] = math.sin(a)
+        elif node.op == "fastcos":
+            vals[nid] = math.cos(a)
+        elif node.op == "fasttan":
+            vals[nid] = math.tan(a)
+        elif node.op == "fastexp":
+            vals[nid] = math.exp(a)
 
     elif isinstance(node, Clamp):
         a, lo, hi = ref(node.a), ref(node.lo), ref(node.hi)
@@ -743,6 +847,21 @@ def _compute_node(
         state._state[f"{nid}.count"] = count
         vals[nid] = float(count)
 
+    elif isinstance(node, Elapsed):
+        count = state._state[f"{nid}.count"]
+        vals[nid] = float(count)
+        state._state[f"{nid}.count"] = count + 1
+
+    elif isinstance(node, MulAccum):
+        incr = ref(node.incr)
+        reset = ref(node.reset)
+        prod = state._state[f"{nid}.prod"]
+        if reset > 0.0:
+            prod = 1.0
+        prod *= incr
+        state._state[f"{nid}.prod"] = prod
+        vals[nid] = prod
+
     elif isinstance(node, Buffer):
         # State-only, no per-sample compute
         pass
@@ -771,9 +890,56 @@ def _compute_node(
         if 0 <= ii < buf_len:
             buf[ii] = np.float32(val)
 
+    elif isinstance(node, Splat):
+        buf_id = node.buffer
+        idx = ref(node.index)
+        val = ref(node.value)
+        buf = state._state[f"{buf_id}.buf"]
+        buf_len = state._state[f"{buf_id}.len"]
+        ii = int(idx)
+        if 0 <= ii < buf_len:
+            buf[ii] += np.float32(val)
+
     elif isinstance(node, BufSize):
         buf_id = node.buffer
         vals[nid] = float(state._state[f"{buf_id}.len"])
+
+    elif isinstance(node, Cycle):
+        buf_id = node.buffer
+        phase = ref(node.phase)
+        buf = state._state[f"{buf_id}.buf"]
+        buf_len = state._state[f"{buf_id}.len"]
+        p = phase - math.floor(phase)
+        fidx = p * buf_len
+        i0 = int(fidx) % buf_len
+        frac = fidx - math.floor(fidx)
+        i1 = (i0 + 1) % buf_len
+        vals[nid] = float(buf[i0]) + frac * (float(buf[i1]) - float(buf[i0]))
+
+    elif isinstance(node, Wave):
+        buf_id = node.buffer
+        phase = ref(node.phase)
+        buf = state._state[f"{buf_id}.buf"]
+        blen: int = state._state[f"{buf_id}.len"]
+        norm = (phase + 1.0) * 0.5
+        fidx = norm * (blen - 1)
+        fidx = max(0.0, min(fidx, float(blen - 1)))
+        i0 = int(fidx)
+        frac = fidx - float(i0)
+        i1 = min(i0 + 1, blen - 1)
+        vals[nid] = float(buf[i0]) + frac * (float(buf[i1]) - float(buf[i0]))
+
+    elif isinstance(node, Lookup):
+        buf_id = node.buffer
+        idx = ref(node.index)
+        buf = state._state[f"{buf_id}.buf"]
+        llen: int = state._state[f"{buf_id}.len"]
+        ci = max(0.0, min(idx, 1.0))
+        fidx = ci * (llen - 1)
+        i0 = int(fidx)
+        frac = fidx - float(i0)
+        i1 = min(i0 + 1, llen - 1)
+        vals[nid] = float(buf[i0]) + frac * (float(buf[i1]) - float(buf[i0]))
 
     elif isinstance(node, RateDiv):
         a = ref(node.a)
@@ -809,6 +975,63 @@ def _compute_node(
         state._state[f"{nid}.prev"] = y
         vals[nid] = y
 
+    elif isinstance(node, Slide):
+        a = ref(node.a)
+        up = ref(node.up)
+        down = ref(node.down)
+        prev = state._state[f"{nid}.prev"]
+        s = up if a > prev else down
+        s = s if s > 1.0 else 1.0
+        y = prev + (a - prev) / s
+        state._state[f"{nid}.prev"] = y
+        vals[nid] = y
+
+    elif isinstance(node, ADSR):
+        gate_val = ref(node.gate)
+        attack_ms = ref(node.attack)
+        decay_ms = ref(node.decay)
+        sustain_lvl = ref(node.sustain)
+        release_ms = ref(node.release)
+        phase = state._state[f"{nid}.phase"]
+        output = state._state[f"{nid}.output"]
+        ptrig = state._state[f"{nid}.ptrig"]
+        sr = state.sr
+        # Edge detection: gate on
+        if gate_val > 0.0 and ptrig <= 0.0:
+            phase = 1  # ATTACK
+        # Edge detection: gate off
+        if gate_val <= 0.0 and ptrig > 0.0:
+            phase = 4  # RELEASE
+        ptrig = gate_val
+        # Attack
+        if phase == 1:
+            a_samps = max(attack_ms * sr * 0.001, 1.0)
+            output += 1.0 / a_samps
+            if output >= 1.0:
+                output = 1.0
+                phase = 2
+        # Decay
+        if phase == 2:
+            d_samps = max(decay_ms * sr * 0.001, 1.0)
+            output -= (1.0 - sustain_lvl) / d_samps
+            if output <= sustain_lvl:
+                output = sustain_lvl
+                phase = 3
+        # Sustain
+        if phase == 3:
+            output = sustain_lvl
+        # Release
+        if phase == 4:
+            r_samps = max(release_ms * sr * 0.001, 1.0)
+            output -= 1.0 / r_samps
+            if output <= 0.0:
+                output = 0.0
+                phase = 0
+        state._state[f"{nid}.phase"] = phase
+        state._state[f"{nid}.output"] = output
+        state._state[f"{nid}.ptrig"] = ptrig
+        vals[nid] = output
+
     elif isinstance(node, Peek):
         a = ref(node.a)
         vals[nid] = a
@@ -819,6 +1042,9 @@ def _compute_node(
 
     elif isinstance(node, NamedConstant):
         vals[nid] = _NAMED_CONSTANT_VALUES[node.op]
+
+    elif isinstance(node, SampleRate):
+        vals[nid] = state.sr
 
     elif isinstance(node, Smoothstep):
         a = ref(node.a)

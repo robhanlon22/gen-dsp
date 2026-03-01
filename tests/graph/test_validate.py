@@ -10,18 +10,26 @@ from gen_dsp.graph import (
     BufRead,
     BufSize,
     BufWrite,
+    Cycle,
     DelayLine,
     DelayRead,
     DelayWrite,
+    Elapsed,
     GateOut,
     GateRoute,
     Graph,
     GraphValidationError,
     History,
+    Lookup,
+    MulAccum,
+    Splat,
     OnePole,
     Param,
+    SampleRate,
     Selector,
+    Slide,
     Subgraph,
+    Wave,
     validate_graph,
 )
 
@@ -528,3 +536,151 @@ class TestSelectorConsistency:
         )
         errors = validate_graph(g)
         assert any("unknown ID 'missing'" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# Slide, SampleRate validation
+# ---------------------------------------------------------------------------
+
+
+class TestSlideValidation:
+    def test_slide_dangling_ref(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            nodes=[Slide(id="sl", a="missing", up=10.0, down=20.0)],
+        )
+        errors = validate_graph(g)
+        assert any("unknown ID 'missing'" in e for e in errors)
+
+    def test_slide_valid(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=10.0, down=20.0)],
+        )
+        errors = validate_graph(g)
+        assert errors == []
+
+
+class TestSampleRateValidation:
+    def test_samplerate_valid(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="sr_node")],
+            nodes=[SampleRate(id="sr_node")],
+        )
+        errors = validate_graph(g)
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# Elapsed, MulAccum, Cycle/Wave/Lookup validation
+# ---------------------------------------------------------------------------
+
+
+class TestElapsedValidation:
+    def test_elapsed_valid(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[Elapsed(id="el")],
+        )
+        assert validate_graph(g) == []
+
+
+class TestMulAccumValidation:
+    def test_mulaccum_valid(self) -> None:
+        g = Graph(
+            name="test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ma")],
+            nodes=[MulAccum(id="ma", incr="in1", reset=0.0)],
+        )
+        assert validate_graph(g) == []
+
+    def test_mulaccum_dangling_ref(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[MulAccum(id="ma", incr="missing", reset=0.0)],
+        )
+        errors = validate_graph(g)
+        assert any("unknown ID 'missing'" in e for e in errors)
+
+
+class TestCycleWaveLookupValidation:
+    def test_cycle_valid(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Cycle(id="cy", buffer="buf", phase=0.0),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_cycle_missing_buffer(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[Cycle(id="cy", buffer="missing", phase=0.0)],
+        )
+        errors = validate_graph(g)
+        assert any("non-existent buffer 'missing'" in e for e in errors)
+
+    def test_wave_valid(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="wv")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Wave(id="wv", buffer="buf", phase=0.0),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_wave_missing_buffer(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[Wave(id="wv", buffer="missing", phase=0.0)],
+        )
+        errors = validate_graph(g)
+        assert any("non-existent buffer 'missing'" in e for e in errors)
+
+    def test_lookup_valid(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="lu")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Lookup(id="lu", buffer="buf", index=0.5),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_lookup_missing_buffer(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[Lookup(id="lu", buffer="missing", index=0.5)],
+        )
+        errors = validate_graph(g)
+        assert any("non-existent buffer 'missing'" in e for e in errors)
+
+    def test_splat_valid(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Splat(id="sp", buffer="buf", index=0.0, value=1.0),
+            ],
+        )
+        assert validate_graph(g) == []
+
+    def test_splat_missing_buffer(self) -> None:
+        g = Graph(
+            name="test",
+            nodes=[Splat(id="sp", buffer="missing", index=0.0, value=1.0)],
+        )
+        errors = validate_graph(g)
+        assert any("non-existent buffer 'missing'" in e for e in errors)

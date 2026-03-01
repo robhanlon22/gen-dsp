@@ -37,9 +37,31 @@ class AudioOutput(BaseModel):
 class BinOp(BaseModel):
     id: str
     op: Literal[
-        "add", "sub", "mul", "div", "min", "max", "mod", "pow",
-        "atan2", "hypot", "absdiff", "step",
-        "and", "or", "xor",
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "min",
+        "max",
+        "mod",
+        "pow",
+        "atan2",
+        "hypot",
+        "absdiff",
+        "step",
+        "and",
+        "or",
+        "xor",
+        "rsub",
+        "rdiv",
+        "rmod",
+        "gtp",
+        "ltp",
+        "gtep",
+        "ltep",
+        "eqp",
+        "neqp",
+        "fastpow",
     ]
     a: Ref
     b: Ref
@@ -76,6 +98,25 @@ class UnaryOp(BaseModel):
         "trunc",
         "not",
         "bool",
+        "mtof",
+        "ftom",
+        "atodb",
+        "dbtoa",
+        "phasewrap",
+        "degrees",
+        "radians",
+        "mstosamps",
+        "sampstoms",
+        "t60",
+        "t60time",
+        "fixdenorm",
+        "fixnan",
+        "isdenorm",
+        "isnan",
+        "fastsin",
+        "fastcos",
+        "fasttan",
+        "fastexp",
     ]
     a: Ref
 
@@ -292,6 +333,18 @@ class Counter(BaseModel):
     max: Ref
 
 
+class Elapsed(BaseModel):
+    id: str
+    op: Literal["elapsed"] = "elapsed"
+
+
+class MulAccum(BaseModel):
+    id: str
+    op: Literal["mulaccum"] = "mulaccum"
+    incr: Ref
+    reset: Ref
+
+
 class RateDiv(BaseModel):
     id: str
     op: Literal["rate_div"] = "rate_div"
@@ -304,6 +357,24 @@ class SmoothParam(BaseModel):
     op: Literal["smooth"] = "smooth"
     a: Ref
     coeff: Ref
+
+
+class Slide(BaseModel):
+    id: str
+    op: Literal["slide"] = "slide"
+    a: Ref  # input signal
+    up: Ref  # slide-up rate (samples)
+    down: Ref  # slide-down rate (samples)
+
+
+class ADSR(BaseModel):
+    id: str
+    op: Literal["adsr"] = "adsr"
+    gate: Ref  # >0 = attack/sustain, <=0 = release
+    attack: Ref  # attack time (ms)
+    decay: Ref  # decay time (ms)
+    sustain: Ref  # sustain level [0,1]
+    release: Ref  # release time (ms)
 
 
 class Peek(BaseModel):
@@ -358,6 +429,11 @@ class NamedConstant(BaseModel):
     ]
 
 
+class SampleRate(BaseModel):
+    id: str
+    op: Literal["samplerate"] = "samplerate"
+
+
 class Smoothstep(BaseModel):
     id: str
     op: Literal["smoothstep"] = "smoothstep"
@@ -389,6 +465,7 @@ class Buffer(BaseModel):
     id: str
     op: Literal["buffer"] = "buffer"
     size: int = 48000
+    fill: Literal["zeros", "sine"] = "zeros"
 
 
 class BufRead(BaseModel):
@@ -407,10 +484,39 @@ class BufWrite(BaseModel):
     value: Ref  # value to write
 
 
+class Splat(BaseModel):
+    id: str
+    op: Literal["splat"] = "splat"
+    buffer: str  # Buffer node ID
+    index: Ref  # write position
+    value: Ref  # value to add (overdub)
+
+
 class BufSize(BaseModel):
     id: str
     op: Literal["buf_size"] = "buf_size"
     buffer: str  # Buffer node ID
+
+
+class Cycle(BaseModel):
+    id: str
+    op: Literal["cycle"] = "cycle"
+    buffer: str  # Buffer node ID
+    phase: Ref  # [0, 1) phase, wraps
+
+
+class Wave(BaseModel):
+    id: str
+    op: Literal["wave"] = "wave"
+    buffer: str  # Buffer node ID
+    phase: Ref  # [-1, 1] phase, maps to full buffer
+
+
+class Lookup(BaseModel):
+    id: str
+    op: Literal["lookup"] = "lookup"
+    buffer: str  # Buffer node ID
+    index: Ref  # [0, 1] index, clamped
 
 
 # ---------------------------------------------------------------------------
@@ -473,18 +579,27 @@ Node = Annotated[
         Latch,
         Accum,
         Counter,
+        Elapsed,
+        MulAccum,
         RateDiv,
         SmoothParam,
+        Slide,
+        ADSR,
         Peek,
         Scale,
         Pass,
         NamedConstant,
+        SampleRate,
         Smoothstep,
         Subgraph,
         Buffer,
         BufRead,
         BufWrite,
+        Splat,
         BufSize,
+        Cycle,
+        Wave,
+        Lookup,
         GateRoute,
         GateOut,
         Selector,

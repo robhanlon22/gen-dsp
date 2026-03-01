@@ -12,6 +12,7 @@ import pytest
 
 from gen_dsp.graph import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     AudioInput,
@@ -27,18 +28,22 @@ from gen_dsp.graph import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Noise,
     OnePole,
@@ -49,15 +54,19 @@ from gen_dsp.graph import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
     compile_graph,
     compile_graph_to_file,
@@ -880,6 +889,38 @@ class TestBufferNodes:
         )
         code = compile_graph(g)
         assert "calloc(1024, sizeof(float))" in code
+
+    def test_buffer_fill_sine(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="br")],
+            nodes=[
+                Buffer(id="buf", size=512, fill="sine"),
+                BufRead(id="br", buffer="buf", index=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        assert "sinf(2.0f * 3.14159265f" in code
+        assert "/ (float)512)" in code
+
+    def test_buffer_fill_sine_reset(self) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="br")],
+            nodes=[
+                Buffer(id="buf", size=256, fill="sine"),
+                BufRead(id="br", buffer="buf", index=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        # reset() should refill with sine, not memset to 0
+        assert (
+            "memset" not in code
+            or "m_buf_buf" not in code.split("reset")[1].split("sinf")[0]
+        )
+        # The reset function should contain sinf
+        reset_section = code.split("_reset(")[1]
+        assert "sinf(" in reset_section
 
     def test_buffer_free(self) -> None:
         g = self._make_buf_graph(
@@ -1824,6 +1865,578 @@ class TestGateSelectorCodegen:
                 GateOut(id="go2", gate="gr", channel=2),
                 GateOut(id="go3", gate="gr", channel=3),
                 Selector(id="mux", index="idx", inputs=["go1", "go2", "go3"]),
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Slide, SampleRate, convert ops
+# ---------------------------------------------------------------------------
+
+
+class TestSlideCompile:
+    def test_slide_codegen(self) -> None:
+        g = Graph(
+            name="slide_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=10.0, down=20.0)],
+        )
+        code = compile_graph(g)
+        assert "m_sl_prev" in code
+        assert "sl_x" in code
+        assert "sl_s" in code
+        assert "sl_prev" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_slide_compiles(self) -> None:
+        g = Graph(
+            name="slide_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="sl")],
+            nodes=[Slide(id="sl", a="in1", up=10.0, down=20.0)],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestSampleRateCompile:
+    def test_samplerate_codegen(self) -> None:
+        g = Graph(
+            name="sr_test",
+            outputs=[AudioOutput(id="out1", source="sr_node")],
+            nodes=[SampleRate(id="sr_node")],
+        )
+        code = compile_graph(g)
+        assert "float sr_node = sr;" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_samplerate_compiles(self) -> None:
+        g = Graph(
+            name="sr_test",
+            outputs=[AudioOutput(id="out1", source="sr_node")],
+            nodes=[SampleRate(id="sr_node")],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestConvertOpsCompile:
+    @pytest.mark.parametrize(
+        "op,expected_frag",
+        [
+            ("mtof", "powf(2.0f"),
+            ("ftom", "log2f("),
+            ("atodb", "log10f("),
+            ("dbtoa", "powf(10.0f"),
+        ],
+    )
+    def test_convert_codegen(self, op: str, expected_frag: str) -> None:
+        g = Graph(
+            name="conv_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op=op, a="in1")],
+        )
+        code = compile_graph(g)
+        assert expected_frag in code
+
+    @pytest.mark.parametrize("op", ["mtof", "ftom", "atodb", "dbtoa"])
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_convert_compiles(self, op: str) -> None:
+        g = Graph(
+            name="conv_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="conv")],
+            nodes=[UnaryOp(id="conv", op=op, a="in1")],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestElapsedCompile:
+    def test_elapsed_codegen(self) -> None:
+        g = Graph(
+            name="elapsed_test",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[Elapsed(id="el")],
+        )
+        code = compile_graph(g)
+        assert "el_count" in code
+        assert "el_count++" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_elapsed_compiles(self) -> None:
+        g = Graph(
+            name="elapsed_test",
+            outputs=[AudioOutput(id="out1", source="el")],
+            nodes=[Elapsed(id="el")],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestMulAccumCompile:
+    def test_mulaccum_codegen(self) -> None:
+        g = Graph(
+            name="ma_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ma")],
+            nodes=[MulAccum(id="ma", incr="in1", reset=0.0)],
+        )
+        code = compile_graph(g)
+        assert "ma_prod" in code
+        assert "ma_prod *=" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_mulaccum_compiles(self) -> None:
+        g = Graph(
+            name="ma_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ma")],
+            nodes=[MulAccum(id="ma", incr="in1", reset=0.0)],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestPhasewrapCompile:
+    def test_phasewrap_codegen(self) -> None:
+        g = Graph(
+            name="pw_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="pw")],
+            nodes=[UnaryOp(id="pw", op="phasewrap", a="in1")],
+        )
+        code = compile_graph(g)
+        assert "6.28318530f" in code or "floorf" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_phasewrap_compiles(self) -> None:
+        g = Graph(
+            name="pw_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="pw")],
+            nodes=[UnaryOp(id="pw", op="phasewrap", a="in1")],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestCycleWaveLookupCompile:
+    def test_cycle_codegen(self) -> None:
+        g = Graph(
+            name="cy_test",
+            outputs=[AudioOutput(id="out1", source="cy")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BufWrite(id="bw", buffer="buf", index=0.0, value=0.0),
+                Cycle(id="cy", buffer="buf", phase=0.5),
+            ],
+        )
+        code = compile_graph(g)
+        assert "buf_buf" in code
+        assert "floorf" in code
+
+    def test_wave_codegen(self) -> None:
+        g = Graph(
+            name="wv_test",
+            outputs=[AudioOutput(id="out1", source="wv")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BufWrite(id="bw", buffer="buf", index=0.0, value=0.0),
+                Wave(id="wv", buffer="buf", phase=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        assert "buf_buf" in code
+
+    def test_lookup_codegen(self) -> None:
+        g = Graph(
+            name="lu_test",
+            outputs=[AudioOutput(id="out1", source="lu")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BufWrite(id="bw", buffer="buf", index=0.0, value=0.0),
+                Lookup(id="lu", buffer="buf", index=0.5),
+            ],
+        )
+        code = compile_graph(g)
+        assert "buf_buf" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    @pytest.mark.parametrize(
+        "NodeCls,kwargs",
+        [
+            (Cycle, {"buffer": "buf", "phase": 0.5}),
+            (Wave, {"buffer": "buf", "phase": 0.0}),
+            (Lookup, {"buffer": "buf", "index": 0.5}),
+        ],
+    )
+    def test_buffer_variants_compile(self, NodeCls, kwargs) -> None:
+        node = NodeCls(id="nd", **kwargs)
+        g = Graph(
+            name="bufvar_test",
+            outputs=[AudioOutput(id="out1", source="nd")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BufWrite(id="bw", buffer="buf", index=0.0, value=0.0),
+                node,
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestBatch3Compile:
+    """Codegen and compilation tests for batch 3 operators."""
+
+    def test_reverse_binops_codegen(self) -> None:
+        g = Graph(
+            name="rev_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="rsb")],
+            nodes=[
+                BinOp(id="rsb", op="rsub", a="in1", b=5.0),
+                BinOp(id="rdv", op="rdiv", a="in1", b=10.0),
+                BinOp(id="rmd", op="rmod", a="in1", b=7.0),
+            ],
+        )
+        code = compile_graph(g)
+        assert "5.0f - in1[i]" in code
+        assert "10.0f / in1[i]" in code
+        assert "fmodf(7.0f, in1[i])" in code
+
+    def test_p_comparison_codegen(self) -> None:
+        g = Graph(
+            name="pcmp_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="gtp_n")],
+            nodes=[
+                BinOp(id="gtp_n", op="gtp", a="in1", b=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        assert "? in1[i] : 0.0f" in code
+
+    def test_angle_convert_codegen(self) -> None:
+        g = Graph(
+            name="angle_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="deg")],
+            nodes=[
+                UnaryOp(id="deg", op="degrees", a="in1"),
+                UnaryOp(id="rad", op="radians", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "57.29577951f" in code
+        assert "0.01745329f" in code
+
+    def test_sample_ms_convert_codegen(self) -> None:
+        g = Graph(
+            name="ms_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="ms2s")],
+            nodes=[
+                UnaryOp(id="ms2s", op="mstosamps", a="in1"),
+                UnaryOp(id="s2ms", op="sampstoms", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "sr / 1000.0f" in code
+        assert "1000.0f / sr" in code
+
+    def test_t60_codegen(self) -> None:
+        g = Graph(
+            name="t60_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="t")],
+            nodes=[
+                UnaryOp(id="t", op="t60", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "expf(-6.9078f" in code
+        assert "* sr" in code
+
+    def test_t60time_codegen(self) -> None:
+        g = Graph(
+            name="t60time_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="t")],
+            nodes=[
+                UnaryOp(id="t", op="t60time", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "logf(" in code
+        assert "-6.9078f" in code
+        assert "* sr" in code
+
+    def test_dsp_safety_codegen(self) -> None:
+        g = Graph(
+            name="safe_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="fd")],
+            nodes=[
+                UnaryOp(id="fd", op="fixdenorm", a="in1"),
+                UnaryOp(id="fn", op="fixnan", a="in1"),
+                UnaryOp(id="isd", op="isdenorm", a="in1"),
+                UnaryOp(id="isn", op="isnan", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "1e-18f" in code
+
+    def test_fast_approx_codegen(self) -> None:
+        g = Graph(
+            name="fast_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="fs")],
+            nodes=[
+                BinOp(id="fp", op="fastpow", a="in1", b=2.0),
+                UnaryOp(id="fs", op="fastsin", a="in1"),
+                UnaryOp(id="fc", op="fastcos", a="in1"),
+                UnaryOp(id="ft", op="fasttan", a="in1"),
+                UnaryOp(id="fe", op="fastexp", a="in1"),
+            ],
+        )
+        code = compile_graph(g)
+        assert "exp2f" in code
+        assert "log2f" in code
+        assert "49.3480220f" in code
+        assert "12102203.0f" in code
+
+    def test_splat_codegen(self) -> None:
+        g = Graph(
+            name="splat_test",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="br")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                Splat(id="sp", buffer="buf", index=0.0, value="in1"),
+                BufRead(id="br", buffer="buf", index=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        assert "+=" in code
+
+    @pytest.mark.skipif(not shutil.which("g++"), reason="g++ not found")
+    def test_batch3_all_compile(self) -> None:
+        """All batch 3 ops compile with g++."""
+        g = Graph(
+            name="batch3_all",
+            inputs=[AudioInput(id="in1")],
+            outputs=[AudioOutput(id="out1", source="rsb")],
+            nodes=[
+                Buffer(id="buf", size=1024),
+                BinOp(id="rsb", op="rsub", a="in1", b=5.0),
+                BinOp(id="rdv", op="rdiv", a="in1", b=10.0),
+                BinOp(id="rmd", op="rmod", a="in1", b=7.0),
+                BinOp(id="gtp_n", op="gtp", a="in1", b=0.0),
+                BinOp(id="ltp_n", op="ltp", a="in1", b=0.0),
+                BinOp(id="gtep_n", op="gtep", a="in1", b=0.0),
+                BinOp(id="ltep_n", op="ltep", a="in1", b=0.0),
+                BinOp(id="eqp_n", op="eqp", a="in1", b=0.0),
+                BinOp(id="neqp_n", op="neqp", a="in1", b=0.0),
+                BinOp(id="fp", op="fastpow", a="in1", b=2.0),
+                UnaryOp(id="deg", op="degrees", a="in1"),
+                UnaryOp(id="rad", op="radians", a="in1"),
+                UnaryOp(id="ms2s", op="mstosamps", a="in1"),
+                UnaryOp(id="s2ms", op="sampstoms", a="in1"),
+                UnaryOp(id="t60_n", op="t60", a="in1"),
+                UnaryOp(id="t60t", op="t60time", a="in1"),
+                UnaryOp(id="fd", op="fixdenorm", a="in1"),
+                UnaryOp(id="fn", op="fixnan", a="in1"),
+                UnaryOp(id="isd", op="isdenorm", a="in1"),
+                UnaryOp(id="isn", op="isnan", a="in1"),
+                UnaryOp(id="fs", op="fastsin", a="in1"),
+                UnaryOp(id="fc", op="fastcos", a="in1"),
+                UnaryOp(id="ft", op="fasttan", a="in1"),
+                UnaryOp(id="fe", op="fastexp", a="in1"),
+                Splat(id="sp", buffer="buf", index=0.0, value="in1"),
+                BufRead(id="br", buffer="buf", index=0.0),
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+
+class TestADSRCompilation:
+    """Test ADSR node C++ code generation."""
+
+    def test_adsr_codegen_structure(self) -> None:
+        g = Graph(
+            name="adsr_test",
+            outputs=[AudioOutput(id="out1", source="env")],
+            params=[Param(name="gate")],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate="gate",
+                    attack=10.0,
+                    decay=100.0,
+                    sustain=0.7,
+                    release=200.0,
+                ),
+            ],
+        )
+        code = compile_graph(g)
+        # State fields
+        assert "int m_env_phase;" in code
+        assert "float m_env_output;" in code
+        assert "float m_env_ptrig;" in code
+        # State load
+        assert "int env_phase = self->m_env_phase;" in code
+        assert "float env_output = self->m_env_output;" in code
+        # State save
+        assert "self->m_env_phase = env_phase;" in code
+        assert "self->m_env_output = env_output;" in code
+        # Compute -- edge detection and phase logic
+        assert "env_phase = 1;" in code  # attack phase entry
+        assert "env_phase = 4;" in code  # release phase entry
+        assert "ADSR env" in code  # block comment
+
+    @pytest.mark.skipif(
+        not shutil.which("g++"),
+        reason="g++ not found",
+    )
+    def test_adsr_compiles(self) -> None:
+        g = Graph(
+            name="adsr_compile",
+            outputs=[AudioOutput(id="out1", source="env")],
+            params=[Param(name="gate")],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate="gate",
+                    attack=10.0,
+                    decay=100.0,
+                    sustain=0.7,
+                    release=200.0,
+                ),
+            ],
+        )
+        code = compile_graph(g)
+        with tempfile.NamedTemporaryFile(suffix=".cpp", mode="w", delete=False) as f:
+            f.write(code)
+            f.flush()
+            result = subprocess.run(
+                ["g++", "-std=c++17", "-c", "-o", "/dev/null", "-x", "c++", f.name],
+                capture_output=True,
+                text=True,
+            )
+            Path(f.name).unlink()
+        assert result.returncode == 0, f"g++ failed:\n{result.stderr}"
+
+    @pytest.mark.skipif(
+        not shutil.which("g++"),
+        reason="g++ not found",
+    )
+    def test_adsr_with_param_refs_compiles(self) -> None:
+        g = Graph(
+            name="adsr_params",
+            outputs=[AudioOutput(id="out1", source="env")],
+            params=[
+                Param(name="gate"),
+                Param(name="atk", min=1.0, max=1000.0, default=10.0),
+                Param(name="dec", min=1.0, max=1000.0, default=100.0),
+                Param(name="sus", min=0.0, max=1.0, default=0.7),
+                Param(name="rel", min=1.0, max=2000.0, default=200.0),
+            ],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate="gate",
+                    attack="atk",
+                    decay="dec",
+                    sustain="sus",
+                    release="rel",
+                ),
             ],
         )
         code = compile_graph(g)

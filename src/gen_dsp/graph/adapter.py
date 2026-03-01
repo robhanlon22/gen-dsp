@@ -486,6 +486,7 @@ set_target_properties(${{PROJECT_NAME}} PROPERTIES
     BUNDLE_EXTENSION "component"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.gen-dsp.au.${{PROJECT_NAME}}"
     MACOSX_BUNDLE_BUNDLE_VERSION "{genext_version}"
+    MACOSX_BUNDLE_INFO_PLIST "${{CMAKE_CURRENT_SOURCE_DIR}}/Info.plist"
 )
 
 add_custom_command(TARGET ${{PROJECT_NAME}} POST_BUILD

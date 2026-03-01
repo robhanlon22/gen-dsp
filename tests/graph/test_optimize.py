@@ -7,6 +7,7 @@ import pytest
 
 from gen_dsp.graph import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     AudioInput,
@@ -1154,3 +1155,102 @@ class TestPromoteControlRate:
         )
         _, stats = optimize_graph(g)
         assert stats.control_rate_promoted == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch 3: new ops folding behavior
+# ---------------------------------------------------------------------------
+
+
+class TestBatch3Folding:
+    """Verify foldable batch 3 ops fold, and sr-dependent ops do NOT fold."""
+
+    @pytest.mark.parametrize(
+        "op,a,b,expected",
+        [
+            ("rsub", 3.0, 5.0, 2.0),
+            ("rdiv", 2.0, 10.0, 5.0),
+            ("gtp", 5.0, 3.0, 5.0),
+            ("gtp", 2.0, 3.0, 0.0),
+            ("ltp", 2.0, 3.0, 2.0),
+            ("eqp", 3.0, 3.0, 3.0),
+            ("neqp", 3.0, 5.0, 3.0),
+        ],
+    )
+    def test_new_binop_folds(
+        self, op: str, a: float, b: float, expected: float
+    ) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="r")],
+            nodes=[
+                Constant(id="a", value=a),
+                Constant(id="b", value=b),
+                BinOp(id="r", op=op, a="a", b="b"),
+            ],
+        )
+        folded = constant_fold(g)
+        r = {n.id: n for n in folded.nodes}["r"]
+        assert isinstance(r, Constant)
+        assert r.value == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        "op,a,expected",
+        [
+            ("degrees", 3.14159265, 180.0),
+            ("radians", 180.0, 3.14159265),
+            ("fixdenorm", 1e-39, 0.0),
+            ("fixdenorm", 1.0, 1.0),
+            ("fastsin", 0.0, 0.0),
+            ("fastcos", 0.0, 1.0),
+        ],
+    )
+    def test_foldable_unary_folds(self, op: str, a: float, expected: float) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="r")],
+            nodes=[
+                Constant(id="a", value=a),
+                UnaryOp(id="r", op=op, a="a"),
+            ],
+        )
+        folded = constant_fold(g)
+        r = {n.id: n for n in folded.nodes}["r"]
+        assert isinstance(r, Constant)
+        assert r.value == pytest.approx(expected, abs=1e-4)
+
+    @pytest.mark.parametrize("op", ["mstosamps", "sampstoms", "t60", "t60time"])
+    def test_sr_dependent_ops_do_not_fold(self, op: str) -> None:
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="r")],
+            nodes=[
+                Constant(id="a", value=1.0),
+                UnaryOp(id="r", op=op, a="a"),
+            ],
+        )
+        folded = constant_fold(g)
+        r = {n.id: n for n in folded.nodes}["r"]
+        assert isinstance(r, UnaryOp), f"{op} should NOT be constant-folded"
+
+
+class TestADSROptimization:
+    def test_adsr_not_constant_folded(self) -> None:
+        """ADSR is stateful and should never be constant-folded."""
+        g = Graph(
+            name="test",
+            outputs=[AudioOutput(id="out1", source="env")],
+            nodes=[
+                ADSR(
+                    id="env",
+                    gate=1.0,
+                    attack=10.0,
+                    decay=100.0,
+                    sustain=0.7,
+                    release=200.0,
+                ),
+            ],
+        )
+        folded = constant_fold(g)
+        env = {n.id: n for n in folded.nodes}["env"]
+        assert isinstance(env, ADSR), "ADSR should NOT be constant-folded"

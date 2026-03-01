@@ -227,18 +227,22 @@ gen-dsp graph dot graph.json -o build/
 gen-dsp init --from-graph graph.json -n myeffect -p clap -o build/myeffect
 ```
 
-## Node Types (38)
+## Node Types (53)
 
 ### Arithmetic / Math
 
 | Node | `op` | Fields | Purpose |
 |------|------|--------|---------|
-| `BinOp` | `add`, `sub`, `mul`, `div`, `min`, `max`, `mod`, `pow` | `a`, `b` | Binary arithmetic |
-| `UnaryOp` | `sin`, `cos`, `tanh`, `exp`, `log`, `abs`, `sqrt`, `neg`, `floor`, `ceil`, `round`, `sign`, `atan`, `asin`, `acos` | `a` | Unary math functions |
+| `BinOp` | `add`, `sub`, `mul`, `div`, `min`, `max`, `mod`, `pow`, `rsub`, `rdiv`, `rmod`, `absdiff`, `hypot`, `atan2`, `step`, `and`, `or`, `xor`, `gtp`, `ltp`, `gtep`, `ltep`, `eqp`, `neqp`, `fastpow` | `a`, `b` | Binary arithmetic |
+| `UnaryOp` | `sin`, `cos`, `tanh`, `exp`, `log`, `abs`, `sqrt`, `neg`, `floor`, `ceil`, `round`, `sign`, `atan`, `asin`, `acos`, `not`, `bool`, `exp2`, `log2`, `log10`, `sinh`, `cosh`, `asinh`, `acosh`, `atanh`, `trunc`, `fract`, `atodb`, `dbtoa`, `ftom`, `mtof`, `phasewrap`, `degrees`, `radians`, `mstosamps`, `sampstoms`, `t60`, `t60time`, `fixdenorm`, `fixnan`, `isdenorm`, `isnan`, `fastsin`, `fastcos`, `fasttan`, `fastexp` | `a` | Unary math functions |
 | `Clamp` | `clamp` | `a`, `lo`, `hi` | Saturate to `[lo, hi]` |
 | `Constant` | `constant` | `value` | Literal float value |
 | `Compare` | `gt`, `lt`, `gte`, `lte`, `eq` | `a`, `b` | Comparison (returns 0.0 or 1.0) |
 | `Select` | `select` | `cond`, `a`, `b` | Conditional: `a` if `cond > 0`, else `b` |
+| `GateRoute` | `gate_route` | `a`, `index`, `count` | 1-to-N demux routing |
+| `GateOut` | `gate_out` | `gate`, `channel` | Read one channel from GateRoute |
+| `Selector` | `selector` | `index`, `inputs` | N-to-1 mux selection |
+| `Smoothstep` | `smoothstep` | `a`, `lo`, `hi` | Hermite smoothstep interpolation |
 | `Wrap` | `wrap` | `a`, `lo`, `hi` | Wrap value into range |
 | `Fold` | `fold` | `a`, `lo`, `hi` | Fold (reflect) value into range |
 | `Mix` | `mix` | `a`, `b`, `t` | Linear interpolation: `a + (b - a) * t` |
@@ -260,7 +264,11 @@ gen-dsp init --from-graph graph.json -n myeffect -p clap -o build/myeffect
 | `Buffer` | `buffer` | `size` | Random-access data buffer |
 | `BufRead` | `buf_read` | `buffer`, `index`, `interp` | Read from buffer (none/linear/cubic, clamped) |
 | `BufWrite` | `buf_write` | `buffer`, `index`, `value` | Write to buffer at index |
+| `Splat` | `splat` | `buffer`, `index`, `value` | Overdub write (buf[idx] += value) |
 | `BufSize` | `buf_size` | `buffer` | Returns buffer length as float |
+| `Cycle` | `cycle` | `freq` | Sine wavetable oscillator (512-sample) |
+| `Wave` | `wave` | `buffer`, `phase`, `start`, `end` | Wavetable synthesis with phase |
+| `Lookup` | `lookup` | `buffer`, `index` | Waveshaping table lookup [-1,1] |
 
 ### Filters
 
@@ -292,10 +300,17 @@ gen-dsp init --from-graph graph.json -n myeffect -p clap -o build/myeffect
 | `SampleHold` | `sample_hold` | `a`, `trig` | Latch on any zero crossing |
 | `Latch` | `latch` | `a`, `trig` | Latch on rising edge only |
 | `Accum` | `accum` | `incr`, `reset` | Running sum, resets when `reset > 0` |
+| `MulAccum` | `mulaccum` | `a`, `mul` | Multiplicative accumulator |
 | `Counter` | `counter` | `trig`, `max` | Integer counter, wraps at max |
+| `Elapsed` | `elapsed` | -- | Sample counter since start |
+| `Slide` | `slide` | `a`, `up`, `down` | Asymmetric slew limiter |
 | `RateDiv` | `rate_div` | `a`, `divisor` | Output every N-th sample, hold between |
 | `SmoothParam` | `smooth` | `a`, `coeff` | One-pole smoothing for param changes |
 | `Peek` | `peek` | `a` | Debug pass-through, readable externally |
+| `Constant` | `constant` | `value` | Literal float value |
+| `NamedConstant` | `named_constant` | `name` | Mathematical constant (pi, e, etc.) |
+| `SampleRate` | `samplerate` | -- | Current sample rate |
+| `Pass` | `pass` | `a` | Identity pass-through |
 
 ## C++ Compilation
 
@@ -373,3 +388,7 @@ python examples/graph/wavetable.py -p sc
 - `noise_gate.py` -- dynamics gate with envelope follower
 - `chorus.py` -- modulated delay chorus effect
 - `subtractive_synth.py` -- sawtooth through one-pole lowpass (generator)
+- `waveshaper.py` -- lookup table waveshaping with Slide and fixdenorm
+- `allpass_reverb.py` -- Schroeder reverb with Allpass, t60, mstosamps, DCBlock
+- `signal_router.py` -- GateRoute/GateOut demux + Selector mux routing
+- `fm_synth.py` -- two-operator FM synthesis with Cycle wavetable oscillators

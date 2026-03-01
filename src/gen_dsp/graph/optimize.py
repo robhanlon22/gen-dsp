@@ -7,6 +7,7 @@ from typing import NamedTuple, Union
 
 from gen_dsp.graph.models import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     BinOp,
@@ -20,18 +21,22 @@ from gen_dsp.graph.models import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Node,
     Noise,
@@ -42,15 +47,19 @@ from gen_dsp.graph.models import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 
@@ -77,13 +86,21 @@ _STATEFUL_TYPES = (
     Latch,
     Accum,
     Counter,
+    Elapsed,
+    MulAccum,
     RateDiv,
     SmoothParam,
+    Slide,
+    ADSR,
     Peek,
     Buffer,
     BufRead,
     BufWrite,
+    Splat,
     BufSize,
+    Cycle,
+    Wave,
+    Lookup,
 )
 
 
@@ -110,6 +127,16 @@ _BINOP_EVAL: dict[str, object] = {
     "and": lambda a, b: 1.0 if (a != 0.0 and b != 0.0) else 0.0,
     "or": lambda a, b: 1.0 if (a != 0.0 or b != 0.0) else 0.0,
     "xor": lambda a, b: 1.0 if ((a != 0.0) != (b != 0.0)) else 0.0,
+    "rsub": lambda a, b: b - a,
+    "rdiv": lambda a, b: b / a if a != 0.0 else float("inf"),
+    "rmod": lambda a, b: math.fmod(b, a) if a != 0.0 else 0.0,
+    "gtp": lambda a, b: a if a > b else 0.0,
+    "ltp": lambda a, b: a if a < b else 0.0,
+    "gtep": lambda a, b: a if a >= b else 0.0,
+    "ltep": lambda a, b: a if a <= b else 0.0,
+    "eqp": lambda a, b: a if a == b else 0.0,
+    "neqp": lambda a, b: a if a != b else 0.0,
+    "fastpow": lambda a, b: a**b,
 }
 
 _UNARYOP_EVAL: dict[str, object] = {
@@ -141,6 +168,21 @@ _UNARYOP_EVAL: dict[str, object] = {
     "trunc": math.trunc,
     "not": lambda x: 1.0 if x == 0.0 else 0.0,
     "bool": lambda x: 0.0 if x == 0.0 else 1.0,
+    "mtof": lambda x: 440.0 * math.pow(2.0, (x - 69.0) / 12.0),
+    "ftom": lambda x: 69.0 + 12.0 * math.log2(max(x, 1e-10) / 440.0),
+    "atodb": lambda x: 20.0 * math.log10(max(x, 1e-10)),
+    "dbtoa": lambda x: math.pow(10.0, x / 20.0),
+    "phasewrap": lambda x: x - 2.0 * math.pi * math.floor(x / (2.0 * math.pi) + 0.5),
+    "degrees": lambda x: x * (180.0 / math.pi),
+    "radians": lambda x: x * (math.pi / 180.0),
+    "fixdenorm": lambda x: 0.0 if abs(x) < 1e-18 else x,
+    "fixnan": lambda x: 0.0 if math.isnan(x) else x,
+    "isdenorm": lambda x: 1.0 if (abs(x) < 1e-18 and x != 0.0) else 0.0,
+    "isnan": lambda x: 1.0 if math.isnan(x) else x,
+    "fastsin": math.sin,
+    "fastcos": math.cos,
+    "fasttan": math.tan,
+    "fastexp": math.exp,
 }
 
 _COMPARE_EVAL: dict[str, object] = {
@@ -172,7 +214,9 @@ def _try_fold(node: Node, constants: dict[str, float]) -> float | None:
     if isinstance(node, UnaryOp):
         a = _resolve_ref(node.a, constants)
         if a is not None:
-            fn = _UNARYOP_EVAL[node.op]
+            fn = _UNARYOP_EVAL.get(node.op)
+            if fn is None:
+                return None  # sr-dependent ops cannot be folded
             return float(fn(a))  # type: ignore[operator]
         return None
 
@@ -259,6 +303,9 @@ def _try_fold(node: Node, constants: dict[str, float]) -> float | None:
             return a
         return None
 
+    if isinstance(node, SampleRate):
+        return None  # runtime value, not constant-foldable
+
     if isinstance(node, NamedConstant):
         from gen_dsp.graph.compile import _NAMED_CONSTANT_VALUES
 
@@ -343,10 +390,10 @@ def eliminate_dead_nodes(graph: Graph) -> Graph:
         if isinstance(node, DelayWrite):
             delay_writers.setdefault(node.delay, []).append(node.id)
 
-    # Map buffer ID -> BufWrite node IDs that write to it
+    # Map buffer ID -> BufWrite/Splat node IDs that write to it
     buffer_writers: dict[str, list[str]] = {}
     for node in graph.nodes:
-        if isinstance(node, BufWrite):
+        if isinstance(node, (BufWrite, Splat)):
             buffer_writers.setdefault(node.buffer, []).append(node.id)
 
     # Seed with output sources
@@ -549,6 +596,8 @@ def _cse_key(
         )
     if isinstance(node, Pass):
         return ("pass", r(node.a))
+    if isinstance(node, SampleRate):
+        return ("samplerate",)
     if isinstance(node, NamedConstant):
         return ("namedconstant", node.op)
     if isinstance(node, Smoothstep):

@@ -9,6 +9,7 @@ from typing import Callable
 
 from gen_dsp.graph.models import (
     SVF,
+    ADSR,
     Accum,
     Allpass,
     BinOp,
@@ -22,18 +23,22 @@ from gen_dsp.graph.models import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
     Delta,
+    Elapsed,
     Fold,
     GateOut,
     GateRoute,
     Graph,
     History,
     Latch,
+    Lookup,
     Mix,
+    MulAccum,
     NamedConstant,
     Node,
     Noise,
@@ -45,15 +50,19 @@ from gen_dsp.graph.models import (
     PulseOsc,
     RateDiv,
     SampleHold,
+    SampleRate,
     SawOsc,
     Scale,
     Select,
     Selector,
     SinOsc,
+    Slide,
     Smoothstep,
     SmoothParam,
+    Splat,
     TriOsc,
     UnaryOp,
+    Wave,
     Wrap,
 )
 from gen_dsp.graph.optimize import _STATEFUL_TYPES
@@ -327,11 +336,21 @@ def _emit_state_fields(node: Node, w: _Writer) -> None:
     elif isinstance(node, Counter):
         w(f"    int m_{node.id}_count;")
         w(f"    float m_{node.id}_ptrig;")
+    elif isinstance(node, Elapsed):
+        w(f"    int m_{node.id}_count;")
+    elif isinstance(node, MulAccum):
+        w(f"    float m_{node.id}_prod;")
     elif isinstance(node, RateDiv):
         w(f"    int m_{node.id}_count;")
         w(f"    float m_{node.id}_held;")
     elif isinstance(node, SmoothParam):
         w(f"    float m_{node.id}_prev;")
+    elif isinstance(node, Slide):
+        w(f"    float m_{node.id}_prev;")
+    elif isinstance(node, ADSR):
+        w(f"    int m_{node.id}_phase;")
+        w(f"    float m_{node.id}_output;")
+        w(f"    float m_{node.id}_ptrig;")
     elif isinstance(node, Peek):
         w(f"    float m_{node.id}_value;")
     elif isinstance(node, Buffer):
@@ -374,16 +393,29 @@ def _emit_state_init(node: Node, w: _Writer) -> None:
     elif isinstance(node, (SampleHold, Latch)):
         w(f"    self->m_{node.id}_held = 0.0f;")
         w(f"    self->m_{node.id}_ptrig = 0.0f;")
+    elif isinstance(node, MulAccum):
+        w(f"    self->m_{node.id}_prod = 1.0f;")
     elif isinstance(node, RateDiv):
         w(f"    self->m_{node.id}_count = 0;")
         w(f"    self->m_{node.id}_held = 0.0f;")
     elif isinstance(node, SmoothParam):
         w(f"    self->m_{node.id}_prev = 0.0f;")
+    elif isinstance(node, Slide):
+        w(f"    self->m_{node.id}_prev = 0.0f;")
+    elif isinstance(node, ADSR):
+        w(f"    self->m_{node.id}_phase = 0;")
+        w(f"    self->m_{node.id}_output = 0.0f;")
+        w(f"    self->m_{node.id}_ptrig = 0.0f;")
     elif isinstance(node, Peek):
         w(f"    self->m_{node.id}_value = 0.0f;")
     elif isinstance(node, Buffer):
         w(f"    self->m_{node.id}_len = {node.size};")
         w(f"    self->m_{node.id}_buf = (float*)calloc({node.size}, sizeof(float));")
+        if node.fill == "sine":
+            w(f"    for (int _k = 0; _k < {node.size}; _k++)")
+            w(
+                f"        self->m_{node.id}_buf[_k] = sinf(2.0f * 3.14159265f * (float)_k / (float){node.size});"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -438,17 +470,33 @@ def _emit_state_reset(node: Node, w: _Writer) -> None:
     elif isinstance(node, Counter):
         w(f"    self->m_{node.id}_count = 0;")
         w(f"    self->m_{node.id}_ptrig = 0.0f;")
+    elif isinstance(node, Elapsed):
+        w(f"    self->m_{node.id}_count = 0;")
+    elif isinstance(node, MulAccum):
+        w(f"    self->m_{node.id}_prod = 1.0f;")
     elif isinstance(node, RateDiv):
         w(f"    self->m_{node.id}_count = 0;")
         w(f"    self->m_{node.id}_held = 0.0f;")
     elif isinstance(node, SmoothParam):
         w(f"    self->m_{node.id}_prev = 0.0f;")
+    elif isinstance(node, Slide):
+        w(f"    self->m_{node.id}_prev = 0.0f;")
+    elif isinstance(node, ADSR):
+        w(f"    self->m_{node.id}_phase = 0;")
+        w(f"    self->m_{node.id}_output = 0.0f;")
+        w(f"    self->m_{node.id}_ptrig = 0.0f;")
     elif isinstance(node, Peek):
         w(f"    self->m_{node.id}_value = 0.0f;")
     elif isinstance(node, Buffer):
-        w(
-            f"    memset(self->m_{node.id}_buf, 0, self->m_{node.id}_len * sizeof(float));"
-        )
+        if node.fill == "sine":
+            w(f"    for (int _k = 0; _k < self->m_{node.id}_len; _k++)")
+            w(
+                f"        self->m_{node.id}_buf[_k] = sinf(2.0f * 3.14159265f * (float)_k / (float)self->m_{node.id}_len);"
+            )
+        else:
+            w(
+                f"    memset(self->m_{node.id}_buf, 0, self->m_{node.id}_len * sizeof(float));"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -759,11 +807,21 @@ def _emit_state_load(node: Node, w: _Writer) -> None:
     elif isinstance(node, Counter):
         w(f"    int {node.id}_count = self->m_{node.id}_count;")
         w(f"    float {node.id}_ptrig = self->m_{node.id}_ptrig;")
+    elif isinstance(node, Elapsed):
+        w(f"    int {node.id}_count = self->m_{node.id}_count;")
+    elif isinstance(node, MulAccum):
+        w(f"    float {node.id}_prod = self->m_{node.id}_prod;")
     elif isinstance(node, RateDiv):
         w(f"    int {node.id}_count = self->m_{node.id}_count;")
         w(f"    float {node.id}_held = self->m_{node.id}_held;")
     elif isinstance(node, SmoothParam):
         w(f"    float {node.id}_prev = self->m_{node.id}_prev;")
+    elif isinstance(node, Slide):
+        w(f"    float {node.id}_prev = self->m_{node.id}_prev;")
+    elif isinstance(node, ADSR):
+        w(f"    int {node.id}_phase = self->m_{node.id}_phase;")
+        w(f"    float {node.id}_output = self->m_{node.id}_output;")
+        w(f"    float {node.id}_ptrig = self->m_{node.id}_ptrig;")
     elif isinstance(node, Peek):
         w(f"    float {node.id}_value = self->m_{node.id}_value;")
     elif isinstance(node, Buffer):
@@ -806,11 +864,21 @@ def _emit_state_save(node: Node, w: _Writer) -> None:
     elif isinstance(node, Counter):
         w(f"    self->m_{node.id}_count = {node.id}_count;")
         w(f"    self->m_{node.id}_ptrig = {node.id}_ptrig;")
+    elif isinstance(node, Elapsed):
+        w(f"    self->m_{node.id}_count = {node.id}_count;")
+    elif isinstance(node, MulAccum):
+        w(f"    self->m_{node.id}_prod = {node.id}_prod;")
     elif isinstance(node, RateDiv):
         w(f"    self->m_{node.id}_count = {node.id}_count;")
         w(f"    self->m_{node.id}_held = {node.id}_held;")
     elif isinstance(node, SmoothParam):
         w(f"    self->m_{node.id}_prev = {node.id}_prev;")
+    elif isinstance(node, Slide):
+        w(f"    self->m_{node.id}_prev = {node.id}_prev;")
+    elif isinstance(node, ADSR):
+        w(f"    self->m_{node.id}_phase = {node.id}_phase;")
+        w(f"    self->m_{node.id}_output = {node.id}_output;")
+        w(f"    self->m_{node.id}_ptrig = {node.id}_ptrig;")
     elif isinstance(node, Peek):
         w(f"    self->m_{node.id}_value = {node.id}_value;")
 
@@ -833,13 +901,47 @@ def _emit_node_compute(
         elif node.op == "absdiff":
             w(f"        float {node.id} = fabsf({ref(node.a)} - {ref(node.b)});")
         elif node.op == "step":
-            w(f"        float {node.id} = ({ref(node.a)} >= {ref(node.b)}) ? 1.0f : 0.0f;")
+            w(
+                f"        float {node.id} = ({ref(node.a)} >= {ref(node.b)}) ? 1.0f : 0.0f;"
+            )
         elif node.op == "and":
-            w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f && {ref(node.b)} != 0.0f);")
+            w(
+                f"        float {node.id} = (float)({ref(node.a)} != 0.0f && {ref(node.b)} != 0.0f);"
+            )
         elif node.op == "or":
-            w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f || {ref(node.b)} != 0.0f);")
+            w(
+                f"        float {node.id} = (float)({ref(node.a)} != 0.0f || {ref(node.b)} != 0.0f);"
+            )
         elif node.op == "xor":
-            w(f"        float {node.id} = (float)(({ref(node.a)} != 0.0f) != ({ref(node.b)} != 0.0f));")
+            w(
+                f"        float {node.id} = (float)(({ref(node.a)} != 0.0f) != ({ref(node.b)} != 0.0f));"
+            )
+        elif node.op == "rsub":
+            w(f"        float {node.id} = {ref(node.b)} - {ref(node.a)};")
+        elif node.op == "rdiv":
+            w(f"        float {node.id} = {ref(node.b)} / {ref(node.a)};")
+        elif node.op == "rmod":
+            w(f"        float {node.id} = fmodf({ref(node.b)}, {ref(node.a)});")
+        elif node.op == "gtp":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} > {b}) ? {a} : 0.0f;")
+        elif node.op == "ltp":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} < {b}) ? {a} : 0.0f;")
+        elif node.op == "gtep":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} >= {b}) ? {a} : 0.0f;")
+        elif node.op == "ltep":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} <= {b}) ? {a} : 0.0f;")
+        elif node.op == "eqp":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} == {b}) ? {a} : 0.0f;")
+        elif node.op == "neqp":
+            a, b = ref(node.a), ref(node.b)
+            w(f"        float {node.id} = ({a} != {b}) ? {a} : 0.0f;")
+        elif node.op == "fastpow":
+            w(f"        float {node.id} = exp2f({ref(node.b)} * log2f({ref(node.a)}));")
         else:
             sym = _BINOP_SYMBOLS[node.op]
             w(f"        float {node.id} = {ref(node.a)} {sym} {ref(node.b)};")
@@ -859,6 +961,88 @@ def _emit_node_compute(
             w(f"        float {node.id} = (float)({ref(node.a)} == 0.0f);")
         elif node.op == "bool":
             w(f"        float {node.id} = (float)({ref(node.a)} != 0.0f);")
+        elif node.op == "mtof":
+            a = ref(node.a)
+            w(f"        float {node.id} = 440.0f * powf(2.0f, ({a} - 69.0f) / 12.0f);")
+        elif node.op == "ftom":
+            a = ref(node.a)
+            w(
+                f"        float {node.id} = 69.0f + 12.0f * log2f(fmaxf({a}, 1e-10f) / 440.0f);"
+            )
+        elif node.op == "atodb":
+            a = ref(node.a)
+            w(f"        float {node.id} = 20.0f * log10f(fmaxf({a}, 1e-10f));")
+        elif node.op == "dbtoa":
+            a = ref(node.a)
+            w(f"        float {node.id} = powf(10.0f, {a} / 20.0f);")
+        elif node.op == "phasewrap":
+            a = ref(node.a)
+            w(
+                f"        float {node.id} = {a} - 6.28318530f * floorf({a} * 0.15915494f + 0.5f);"
+            )
+        elif node.op == "degrees":
+            w(f"        float {node.id} = {ref(node.a)} * 57.29577951f;")
+        elif node.op == "radians":
+            w(f"        float {node.id} = {ref(node.a)} * 0.01745329f;")
+        elif node.op == "mstosamps":
+            w(f"        float {node.id} = {ref(node.a)} * sr / 1000.0f;")
+        elif node.op == "sampstoms":
+            w(f"        float {node.id} = {ref(node.a)} * 1000.0f / sr;")
+        elif node.op == "t60":
+            a = ref(node.a)
+            w(f"        float {node.id} = expf(-6.9078f / ({a} * sr));")
+        elif node.op == "t60time":
+            a = ref(node.a)
+            w(f"        float {node.id} = -6.9078f / (logf({a}) * sr);")
+        elif node.op == "fixdenorm":
+            a = ref(node.a)
+            w(f"        float {node.id} = (fabsf({a}) < 1e-18f) ? 0.0f : {a};")
+        elif node.op == "fixnan":
+            a = ref(node.a)
+            w(f"        float {node.id} = ({a} != {a}) ? 0.0f : {a};")
+        elif node.op == "isdenorm":
+            a = ref(node.a)
+            w(
+                f"        float {node.id} = (fabsf({a}) < 1e-18f && {a} != 0.0f) ? 1.0f : 0.0f;"
+            )
+        elif node.op == "isnan":
+            a = ref(node.a)
+            w(f"        float {node.id} = ({a} != {a}) ? 1.0f : 0.0f;")
+        elif node.op == "fastsin":
+            a = ref(node.a)
+            # Bhaskara I approximation: 16x(pi-x) / (5pi^2 - 4x(pi-x))
+            # First wrap to [0, pi] via abs(phasewrap)
+            w(
+                f"        float {node.id}_x = {a} - 6.28318530f * floorf({a} * 0.15915494f + 0.5f);"
+            )
+            w(f"        float {node.id}_sign = ({node.id}_x < 0.0f) ? -1.0f : 1.0f;")
+            w(f"        float {node.id}_ax = fabsf({node.id}_x);")
+            w(f"        float {node.id}_pma = 3.14159265f - {node.id}_ax;")
+            w(
+                f"        float {node.id} = {node.id}_sign * 16.0f * {node.id}_ax * {node.id}_pma / (49.3480220f - 4.0f * {node.id}_ax * {node.id}_pma);"
+            )
+        elif node.op == "fastcos":
+            a = ref(node.a)
+            # fastcos(x) = fastsin(x + pi/2)
+            w(f"        float {node.id}_sh = {a} + 1.57079633f;")
+            w(
+                f"        float {node.id}_x = {node.id}_sh - 6.28318530f * floorf({node.id}_sh * 0.15915494f + 0.5f);"
+            )
+            w(f"        float {node.id}_sign = ({node.id}_x < 0.0f) ? -1.0f : 1.0f;")
+            w(f"        float {node.id}_ax = fabsf({node.id}_x);")
+            w(f"        float {node.id}_pma = 3.14159265f - {node.id}_ax;")
+            w(
+                f"        float {node.id} = {node.id}_sign * 16.0f * {node.id}_ax * {node.id}_pma / (49.3480220f - 4.0f * {node.id}_ax * {node.id}_pma);"
+            )
+        elif node.op == "fasttan":
+            a = ref(node.a)
+            w(f"        float {node.id} = sinf({a}) / cosf({a});")
+        elif node.op == "fastexp":
+            a = ref(node.a)
+            # Schraudolph's method
+            w(f"        union {{ float f; int32_t i; }} {node.id}_u;")
+            w(f"        {node.id}_u.i = (int32_t)(12102203.0f * {a} + 1065353216.0f);")
+            w(f"        float {node.id} = {node.id}_u.f;")
         else:
             func = _UNARYOP_FUNCS[node.op]
             w(f"        float {node.id} = {func}({ref(node.a)});")
@@ -1090,6 +1274,19 @@ def _emit_node_compute(
         w(f"        {nid}_ptrig = {nid}_t;")
         w(f"        float {nid} = (float){nid}_count;")
 
+    elif isinstance(node, Elapsed):
+        nid = node.id
+        w(f"        float {nid} = (float){nid}_count;")
+        w(f"        {nid}_count++;")
+
+    elif isinstance(node, MulAccum):
+        nid = node.id
+        incr = ref(node.incr)
+        reset = ref(node.reset)
+        w(f"        if ({reset} > 0.0f) {nid}_prod = 1.0f;")
+        w(f"        {nid}_prod *= {incr};")
+        w(f"        float {nid} = {nid}_prod;")
+
     elif isinstance(node, Buffer):
         # State-only node, no per-sample computation
         pass
@@ -1117,8 +1314,68 @@ def _emit_node_compute(
         w(f"        if ({nid}_idx >= 0 && {nid}_idx < {buf}_len)")
         w(f"            {buf}_buf[{nid}_idx] = {val};")
 
+    elif isinstance(node, Splat):
+        nid = node.id
+        buf = node.buffer
+        idx = ref(node.index)
+        val = ref(node.value)
+        w(f"        int {nid}_idx = (int)({idx});")
+        w(f"        if ({nid}_idx >= 0 && {nid}_idx < {buf}_len)")
+        w(f"            {buf}_buf[{nid}_idx] += {val};")
+
     elif isinstance(node, BufSize):
         w(f"        float {node.id} = (float)self->m_{node.buffer}_len;")
+
+    elif isinstance(node, Cycle):
+        nid = node.id
+        buf = node.buffer
+        phase = ref(node.phase)
+        # phase [0,1) wraps, linear interpolation
+        w(f"        float {nid}_p = {phase} - floorf({phase});")
+        w(f"        float {nid}_fidx = {nid}_p * (float){buf}_len;")
+        w(f"        int {nid}_i0 = (int){nid}_fidx;")
+        w(f"        float {nid}_frac = {nid}_fidx - (float){nid}_i0;")
+        w(f"        int {nid}_i1 = ({nid}_i0 + 1) % {buf}_len;")
+        w(f"        {nid}_i0 = {nid}_i0 % {buf}_len;")
+        w(
+            f"        float {nid} = {buf}_buf[{nid}_i0] + {nid}_frac * ({buf}_buf[{nid}_i1] - {buf}_buf[{nid}_i0]);"
+        )
+
+    elif isinstance(node, Wave):
+        nid = node.id
+        buf = node.buffer
+        phase = ref(node.phase)
+        # phase [-1,1] maps to [0, len), clamped
+        w(f"        float {nid}_norm = ({phase} + 1.0f) * 0.5f;")
+        w(f"        float {nid}_fidx = {nid}_norm * (float)({buf}_len - 1);")
+        w(f"        if ({nid}_fidx < 0.0f) {nid}_fidx = 0.0f;")
+        w(
+            f"        if ({nid}_fidx > (float)({buf}_len - 1)) {nid}_fidx = (float)({buf}_len - 1);"
+        )
+        w(f"        int {nid}_i0 = (int){nid}_fidx;")
+        w(f"        float {nid}_frac = {nid}_fidx - (float){nid}_i0;")
+        w(f"        int {nid}_i1 = {nid}_i0 + 1;")
+        w(f"        if ({nid}_i1 >= {buf}_len) {nid}_i1 = {buf}_len - 1;")
+        w(
+            f"        float {nid} = {buf}_buf[{nid}_i0] + {nid}_frac * ({buf}_buf[{nid}_i1] - {buf}_buf[{nid}_i0]);"
+        )
+
+    elif isinstance(node, Lookup):
+        nid = node.id
+        buf = node.buffer
+        idx = ref(node.index)
+        # index [0,1] clamped, linear interpolation
+        w(f"        float {nid}_ci = {idx};")
+        w(f"        if ({nid}_ci < 0.0f) {nid}_ci = 0.0f;")
+        w(f"        if ({nid}_ci > 1.0f) {nid}_ci = 1.0f;")
+        w(f"        float {nid}_fidx = {nid}_ci * (float)({buf}_len - 1);")
+        w(f"        int {nid}_i0 = (int){nid}_fidx;")
+        w(f"        float {nid}_frac = {nid}_fidx - (float){nid}_i0;")
+        w(f"        int {nid}_i1 = {nid}_i0 + 1;")
+        w(f"        if ({nid}_i1 >= {buf}_len) {nid}_i1 = {buf}_len - 1;")
+        w(
+            f"        float {nid} = {buf}_buf[{nid}_i0] + {nid}_frac * ({buf}_buf[{nid}_i1] - {buf}_buf[{nid}_i0]);"
+        )
 
     elif isinstance(node, RateDiv):
         nid = node.id
@@ -1149,6 +1406,71 @@ def _emit_node_compute(
         w(f"        float {nid} = (1.0f - {c}) * {a} + {c} * {nid}_prev;")
         w(f"        {nid}_prev = {nid};")
 
+    elif isinstance(node, Slide):
+        nid = node.id
+        a = ref(node.a)
+        up = ref(node.up)
+        down = ref(node.down)
+        w(f"        float {nid}_x = {a};")
+        w(f"        float {nid}_s = ({nid}_x > {nid}_prev) ? {up} : {down};")
+        w(
+            f"        float {nid} = {nid}_prev + ({nid}_x - {nid}_prev) / (({nid}_s > 1.0f) ? {nid}_s : 1.0f);"
+        )
+        w(f"        {nid}_prev = {nid};")
+
+    elif isinstance(node, ADSR):
+        nid = node.id
+        gate = ref(node.gate)
+        attack = ref(node.attack)
+        decay = ref(node.decay)
+        sustain = ref(node.sustain)
+        release = ref(node.release)
+        w(f"        {{ // ADSR {nid}")
+        w(f"            float {nid}_gate = {gate};")
+        w(f"            float {nid}_sus = {sustain};")
+        # Edge detection: gate on
+        w(f"            if ({nid}_gate > 0.0f && {nid}_ptrig <= 0.0f) {nid}_phase = 1;")
+        # Edge detection: gate off
+        w(f"            if ({nid}_gate <= 0.0f && {nid}_ptrig > 0.0f) {nid}_phase = 4;")
+        w(f"            {nid}_ptrig = {nid}_gate;")
+        # Attack phase
+        w(f"            if ({nid}_phase == 1) {{")
+        w(f"                float {nid}_a_ms = {attack};")
+        w(
+            f"                float {nid}_a_samps = fmaxf({nid}_a_ms * sr * 0.001f, 1.0f);"
+        )
+        w(f"                {nid}_output += 1.0f / {nid}_a_samps;")
+        w(
+            f"                if ({nid}_output >= 1.0f) {{ {nid}_output = 1.0f; {nid}_phase = 2; }}"
+        )
+        w("            }")
+        # Decay phase
+        w(f"            if ({nid}_phase == 2) {{")
+        w(f"                float {nid}_d_ms = {decay};")
+        w(
+            f"                float {nid}_d_samps = fmaxf({nid}_d_ms * sr * 0.001f, 1.0f);"
+        )
+        w(f"                {nid}_output -= (1.0f - {nid}_sus) / {nid}_d_samps;")
+        w(
+            f"                if ({nid}_output <= {nid}_sus) {{ {nid}_output = {nid}_sus; {nid}_phase = 3; }}"
+        )
+        w("            }")
+        # Sustain phase
+        w(f"            if ({nid}_phase == 3) {nid}_output = {nid}_sus;")
+        # Release phase
+        w(f"            if ({nid}_phase == 4) {{")
+        w(f"                float {nid}_r_ms = {release};")
+        w(
+            f"                float {nid}_r_samps = fmaxf({nid}_r_ms * sr * 0.001f, 1.0f);"
+        )
+        w(f"                {nid}_output -= 1.0f / {nid}_r_samps;")
+        w(
+            f"                if ({nid}_output <= 0.0f) {{ {nid}_output = 0.0f; {nid}_phase = 0; }}"
+        )
+        w("            }")
+        w("        }")
+        w(f"        float {nid} = {nid}_output;")
+
     elif isinstance(node, Peek):
         nid = node.id
         a = ref(node.a)
@@ -1161,12 +1483,17 @@ def _emit_node_compute(
     elif isinstance(node, NamedConstant):
         w(f"        float {node.id} = {_float_lit(_NAMED_CONSTANT_VALUES[node.op])};")
 
+    elif isinstance(node, SampleRate):
+        w(f"        float {node.id} = sr;")
+
     elif isinstance(node, Smoothstep):
         nid = node.id
         a = ref(node.a)
         e0 = ref(node.edge0)
         e1 = ref(node.edge1)
-        w(f"        float {nid}_t = fminf(fmaxf(({a} - {e0}) / ({e1} - {e0}), 0.0f), 1.0f);")
+        w(
+            f"        float {nid}_t = fminf(fmaxf(({a} - {e0}) / ({e1} - {e0}), 0.0f), 1.0f);"
+        )
         w(f"        float {nid} = {nid}_t * {nid}_t * (3.0f - 2.0f * {nid}_t);")
 
     elif isinstance(node, GateRoute):
