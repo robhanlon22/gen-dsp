@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `signal_router.py` -- signal routing with `GateRoute`/`GateOut` (1-to-N demux) and `Selector` (N-to-1 mux)
   - `fm_synth.py` -- two-operator FM synthesis with `Cycle` wavetable oscillators and `Phasor`
 
+### Fixed
+
+- **Graph: AU Info.plist generation** -- graph-path AU projects were missing Info.plist entirely (no `AudioComponents` dict, `CFBundlePackageType` was `APPL` instead of `BNDL`), causing CoreAudio and DAWs like Ableton Live to not discover the plugin. Fixed by generating Info.plist from the existing AU template and pointing CMake to it via `MACOSX_BUNDLE_INFO_PLIST`
+- **AU: auval connection semantics for generators** -- generators (0 inputs) returned a stream format for non-existent input buses, causing auval to attempt an impossible AU-to-AU connection test. Fixed by returning `kAudioUnitErr_InvalidProperty` for `StreamFormat` Get/Set on input scope when `numInputs == 0`, consistent with `ElementCount` already returning 0
+
 ## [0.1.13]
 
 ### Added

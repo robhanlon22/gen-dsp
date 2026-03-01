@@ -503,11 +503,14 @@ static OSStatus AUGenGetProperty(void* self,
 
     switch (prop) {
         case kAudioUnitProperty_StreamFormat: {
+            // No input bus on generators
+            if (scope == kAudioUnitScope_Input && plug->numInputs == 0)
+                return kAudioUnitErr_InvalidProperty;
             if (*ioDataSize < sizeof(AudioStreamBasicDescription))
                 return kAudioUnitErr_InvalidPropertyValue;
 
             AudioStreamBasicDescription* fmt = (AudioStreamBasicDescription*)outData;
-            if (scope == kAudioUnitScope_Input && plug->numInputs > 0) {
+            if (scope == kAudioUnitScope_Input) {
                 InitStreamFormat(fmt, plug->sampleRate, (UInt32)plug->numInputs);
             } else if (scope == kAudioUnitScope_Output) {
                 InitStreamFormat(fmt, plug->sampleRate, (UInt32)plug->numOutputs);
@@ -695,6 +698,10 @@ static OSStatus AUGenSetProperty(void* self,
 
     switch (prop) {
         case kAudioUnitProperty_StreamFormat: {
+            // No input bus on generators
+            if (scope == kAudioUnitScope_Input && plug->numInputs == 0)
+                return kAudioUnitErr_InvalidProperty;
+
             if (inDataSize < sizeof(AudioStreamBasicDescription))
                 return kAudioUnitErr_InvalidPropertyValue;
 

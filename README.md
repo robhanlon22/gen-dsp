@@ -76,7 +76,7 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 
 - **Platform registry**: To make it easy to discover new backends
 
-- **graph frontend** (optional): Define DSP signal-processing graphs in Python or JSON using 53 built-in node types (oscillators, filters, delays, buffers, math ops, etc.), then compile to C++ and generate buildable plugin projects. Primary purpose is to enable testing gen-dsp's platform backends without gen~ exports. Includes graph validation, optimization (dead-code elimination, constant folding), FAUST-style algebra combinators (`series`, `parallel`, `split`, `merge`), Graphviz visualization, and numpy-based simulation. Covers ~89% of gen~ operators.
+- **graph frontend** (optional): Define DSP signal-processing graphs in Python or JSON using 54 built-in node types (oscillators, filters, delays, buffers, math ops, etc.), then compile to C++ and generate buildable plugin projects. Primary purpose is to enable testing gen-dsp's platform backends without gen~ exports. Includes graph validation, optimization (dead-code elimination, constant folding), FAUST-style algebra combinators (`series`, `parallel`, `split`, `merge`), Graphviz visualization, and numpy-based simulation. Covers ~89% of gen~ operators.
 
 ## Installation
 
@@ -262,7 +262,7 @@ gen-dsp graph simulate lowpass.json -i in1=input.wav -o ./output/ --param cutoff
 
 ### Available Node Types
 
-53 built-in node types covering ~89% of gen~ operators: `BinOp` (add/sub/mul/div/pow/mod/min/max/rsub/rdiv/rmod/absdiff/hypot/atan2/step/and/or/xor/gtp/ltp/gtep/ltep/eqp/neqp/fastpow), `UnaryOp` (abs/neg/sqrt/exp/log/sin/cos/tan/tanh/floor/ceil/round/sign/atan/asin/acos/not/bool/exp2/log2/log10/sinh/cosh/asinh/acosh/atanh/trunc/fract/atodb/dbtoa/ftom/mtof/phasewrap/degrees/radians/mstosamps/sampstoms/t60/t60time/fixdenorm/fixnan/isdenorm/isnan/fastsin/fastcos/fasttan/fastexp), `SinOsc`, `SawOsc`, `PulseOsc`, `TriOsc`, `Phasor`, `Noise`, `OnePole`, `Biquad`, `SVF`, `Allpass`, `DCBlock`, `History`, `DelayLine`/`DelayRead`/`DelayWrite`, `Buffer`/`BufRead`/`BufWrite`/`BufSize`/`Splat`/`Peek`, `Cycle`, `Wave`, `Lookup`, `Accum`, `Counter`, `MulAccum`, `Clamp`, `Wrap`, `Fold`, `Scale`, `Mix`, `Smoothstep`, `Select`, `Compare`, `GateRoute`/`GateOut`, `Selector`, `Change`, `Delta`, `Latch`, `SampleHold`, `Slide`, `Elapsed`, `RateDiv`, `SmoothParam`, `Constant`, `NamedConstant`, `SampleRate`, `Pass`, `Subgraph`.
+54 built-in node types covering ~89% of gen~ operators: `BinOp` (add/sub/mul/div/pow/mod/min/max/rsub/rdiv/rmod/absdiff/hypot/atan2/step/and/or/xor/gtp/ltp/gtep/ltep/eqp/neqp/fastpow), `UnaryOp` (abs/neg/sqrt/exp/log/sin/cos/tan/tanh/floor/ceil/round/sign/atan/asin/acos/not/bool/exp2/log2/log10/sinh/cosh/asinh/acosh/atanh/trunc/fract/atodb/dbtoa/ftom/mtof/phasewrap/degrees/radians/mstosamps/sampstoms/t60/t60time/fixdenorm/fixnan/isdenorm/isnan/fastsin/fastcos/fasttan/fastexp), `SinOsc`, `SawOsc`, `PulseOsc`, `TriOsc`, `Phasor`, `Noise`, `OnePole`, `Biquad`, `SVF`, `Allpass`, `DCBlock`, `History`, `DelayLine`/`DelayRead`/`DelayWrite`, `Buffer`/`BufRead`/`BufWrite`/`BufSize`/`Splat`/`Peek`, `Cycle`, `Wave`, `Lookup`, `ADSR`, `Accum`, `Counter`, `MulAccum`, `Clamp`, `Wrap`, `Fold`, `Scale`, `Mix`, `Smoothstep`, `Select`, `Compare`, `GateRoute`/`GateOut`, `Selector`, `Change`, `Delta`, `Latch`, `SampleHold`, `Slide`, `Elapsed`, `RateDiv`, `SmoothParam`, `Constant`, `NamedConstant`, `SampleRate`, `Pass`, `Subgraph`.
 
 ## Features
 
