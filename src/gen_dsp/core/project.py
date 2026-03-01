@@ -508,14 +508,14 @@ int main(void) {{
                 _get_audio_label,
             )
 
-            board = CIRCLE_BOARDS[board_key]
-            audio_include = _get_audio_include(board.audio_device)
-            audio_base_class = _get_audio_base_class(board.audio_device)
-            audio_label = _get_audio_label(board.audio_device)
+            circle_board = CIRCLE_BOARDS[board_key]
+            audio_include = _get_audio_include(circle_board.audio_device)
+            audio_base_class = _get_audio_base_class(circle_board.audio_device)
+            audio_label = _get_audio_label(circle_board.audio_device)
 
             gen_ext_circle = f"""\
 // gen_ext_circle.cpp - Circle bare metal wrapper for dsp-graph compiled code
-// Board: {board_key} (Raspberry Pi {board.rasppi})
+// Board: {board_key} (Raspberry Pi {circle_board.rasppi})
 // Audio: {audio_label} output
 // This file includes ONLY Circle headers - graph code is isolated in _ext_circle.cpp
 
@@ -718,7 +718,7 @@ int main(void)
             if config_template_path.is_file():
                 config_content = config_template_path.read_text(encoding="utf-8")
                 config_txt = StrTemplate(config_content).safe_substitute(
-                    audio_boot_config=_get_boot_config(board.audio_device),
+                    audio_boot_config=_get_boot_config(circle_board.audio_device),
                 )
                 (output_dir / "config.txt").write_text(config_txt, encoding="utf-8")
 
