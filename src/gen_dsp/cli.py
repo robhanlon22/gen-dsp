@@ -2,10 +2,18 @@
 Command-line interface for gen_dsp.
 
 Usage:
-    gen-dsp init <export-path> -n <name> [-p <platform>] [-o <output>]
-    gen-dsp build [project-path] [-p <platform>] [--clean]
+    gen-dsp <source> -p <platform> [--no-build] [--dry-run]
+    gen-dsp compile <file>
+    gen-dsp validate <file>
+    gen-dsp dot <file>
+    gen-dsp sim <file> [options]
+    gen-dsp build [project-path] [-p <platform>]
     gen-dsp detect <export-path> [--json]
     gen-dsp patch <target-path> [--dry-run]
+    gen-dsp chain <export-dir> --graph <chain.json> -n NAME [-p circle]
+    gen-dsp list
+    gen-dsp cache
+    gen-dsp manifest <export-path>
 """
 
 import argparse
@@ -25,161 +33,176 @@ from gen_dsp.platforms import list_platforms, get_platform
 from gen_dsp.platforms.base import Platform
 
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create the argument parser."""
+# Known subcommands for two-phase dispatch.
+SUBCOMMANDS = {
+    "compile",
+    "validate",
+    "dot",
+    "sim",
+    "build",
+    "detect",
+    "patch",
+    "list",
+    "cache",
+    "manifest",
+    "chain",
+}
+
+
+def _print_help() -> None:
+    """Print top-level help text."""
+    platforms = ", ".join(list_platforms())
+    print(f"""\
+usage: gen-dsp <source> -p <platform> [options]
+       gen-dsp <command> [args]
+
+gen-dsp {__version__} -- generate buildable audio DSP plugins
+
+Default command (auto-detects source type):
+  gen-dsp <dir>           gen~ export directory
+  gen-dsp <file.gdsp>     graph DSL file
+  gen-dsp <file.json>     graph JSON file
+
+  -p, --platform PLATFORM   Target platform (required): {platforms}
+  -n, --name NAME           Plugin name (default: inferred from source)
+  -o, --output DIR          Output directory (default: <name>_<platform>)
+  --no-build                Skip building after project creation
+  --dry-run                 Show what would be done without creating files
+  --buffers NAME [NAME ...]
+  --no-patch                Skip platform patches
+  --no-shared-cache         Disable shared OS cache for FetchContent downloads
+  --board BOARD             Board variant (daisy, circle)
+  --no-midi                 Disable MIDI note handling
+  --midi-gate NAME          MIDI gate parameter name
+  --midi-freq NAME          MIDI frequency parameter name
+  --midi-vel NAME           MIDI velocity parameter name
+  --midi-freq-unit {{hz,midi}}
+  --voices N                Polyphony voices (default: 1)
+
+Subcommands:
+  compile <file>            Compile graph to C++ (stdout or -o dir)
+  validate <file>           Validate a graph file
+  dot <file>                Generate DOT visualization
+  sim <file>                Simulate graph (WAV in/out)
+  build [dir]               Build an existing project
+  detect <dir>              Analyze a gen~ export
+  patch <dir>               Apply platform-specific patches
+  chain <dir>               Multi-plugin chain mode (Circle)
+  list                      List available platforms
+  cache                     Show cached SDKs
+  manifest <dir>            Emit JSON manifest for a gen~ export
+
+Options:
+  -V, --version             Show version
+  -h, --help                Show this help
+""")
+
+
+def _make_default_parser() -> argparse.ArgumentParser:
+    """Parser for the default command: <source> -p <platform> [flags]."""
     parser = argparse.ArgumentParser(
         prog="gen-dsp",
-        description="Generate buildable audio DSP externals from Max gen~ exports",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Initialize a new project from a gen~ export
-  gen-dsp init ./my_export -n myeffect -p pd -o ./myeffect_project
-
-  # Detect buffers and I/O in a gen~ export
-  gen-dsp detect ./my_export
-
-  # Build an existing project
-  gen-dsp build ./myeffect_project
-
-  # Apply platform patches (exp2f fix)
-  gen-dsp patch ./myeffect_project
-
-  # List available target platforms
-  gen-dsp list
-
-  # Show cached SDKs and dependencies
-  gen-dsp cache
-""",
+        add_help=False,
     )
-
     parser.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        version=f"gen-dsp {__version__}",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # init command
-    init_parser = subparsers.add_parser(
-        "init",
-        help="Create a new project from a gen~ export",
-        description="Initialize a new gen_dsp project from exported gen~ code.",
-    )
-    init_parser.add_argument(
-        "export_path",
+        "source",
         type=Path,
-        nargs="?",
-        default=None,
-        help="Path to the gen~ export directory (not needed with --from-graph)",
+        help="Path to gen~ export directory, .gdsp file, or graph JSON file",
     )
-    init_parser.add_argument(
-        "--from-graph",
-        type=Path,
-        dest="from_graph",
-        metavar="GRAPH_JSON",
-        help="Create project from a dsp-graph JSON file instead of a gen~ export",
-    )
-    init_parser.add_argument(
-        "-n",
-        "--name",
-        required=True,
-        help="Name for the external (will be loaded as <name>~ in Pd)",
-    )
-    init_parser.add_argument(
+    parser.add_argument(
         "-p",
         "--platform",
-        choices=list_platforms() + ["both"],
-        default="pd",
-        help=f"Target platform: {', '.join(list_platforms())}, or 'both' (default: pd)",
+        choices=list_platforms(),
+        required=True,
+        help="Target platform",
     )
-    init_parser.add_argument(
+    parser.add_argument(
+        "-n",
+        "--name",
+        default=None,
+        help="Name for the plugin (default: inferred from source)",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         type=Path,
-        help="Output directory (default: ./<name>)",
+        help="Output directory (default: ./<name>_<platform>)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Skip building after project creation",
+    )
+    parser.add_argument(
         "--buffers",
         nargs="+",
         help="Buffer names (overrides auto-detection)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--no-patch",
         action="store_true",
         help="Don't apply platform patches (exp2f fix)",
     )
-    init_parser.add_argument(
-        "--shared-cache",
+    parser.add_argument(
+        "--no-shared-cache",
         action="store_true",
-        help="Use shared OS cache for FetchContent downloads (clap, vst3, lv2, sc)",
+        help="Disable shared OS cache for FetchContent downloads (clap, vst3, lv2, sc)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--board",
-        help="Board variant for embedded platforms. "
-        "Daisy: seed, pod, patch, patch_sm, field, petal, legio, versio (default: seed). "
-        "Circle: pi3-i2s, pi4-usb, pi5-hdmi, etc. (default: pi3-i2s)",
+        help="Board variant for embedded platforms (daisy, circle)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--no-midi",
         action="store_true",
         help="Disable MIDI note handling even if gate/freq params are detected",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--midi-gate",
         metavar="NAME",
         help="Parameter name to use as MIDI gate (implies MIDI enabled)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--midi-freq",
         metavar="NAME",
         help="Parameter name to use as MIDI frequency (implies MIDI enabled)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--midi-vel",
         metavar="NAME",
         help="Parameter name to use as MIDI velocity (implies MIDI enabled)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--midi-freq-unit",
         choices=["hz", "midi"],
         default="hz",
         help="Frequency unit: hz (mtof conversion, default) or midi (raw note number)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--voices",
         type=int,
         default=1,
         metavar="N",
         help="Number of polyphony voices (default: 1 = monophonic, requires MIDI)",
     )
-    init_parser.add_argument(
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be done without creating files",
     )
-    init_parser.add_argument(
-        "--graph",
-        type=Path,
-        help="JSON graph file for multi-plugin chain mode (Circle only)",
+    return parser
+
+
+def _make_subcommand_parser() -> argparse.ArgumentParser:
+    """Parser with all subcommands registered."""
+    parser = argparse.ArgumentParser(
+        prog="gen-dsp",
+        add_help=False,
     )
-    init_parser.add_argument(
-        "--export",
-        type=Path,
-        action="append",
-        dest="exports",
-        help="Additional export path (can be repeated). "
-        "Use with --graph to specify explicit paths for chain nodes.",
-    )
+    subparsers = parser.add_subparsers(dest="command")
 
     # build command
-    build_parser = subparsers.add_parser(
-        "build",
-        help="Build an existing project",
-        description="Compile the external for the target platform.",
-    )
+    build_parser = subparsers.add_parser("build", help="Build an existing project")
     build_parser.add_argument(
         "project_path",
         type=Path,
@@ -192,111 +215,273 @@ Examples:
         "--platform",
         choices=list_platforms(),
         default="pd",
-        help=f"Target platform: {', '.join(list_platforms())} (default: pd)",
+        help="Target platform (default: pd)",
     )
     build_parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Clean before building",
+        "--clean", action="store_true", help="Clean before building"
     )
     build_parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Show build output in real-time",
+        "-v", "--verbose", action="store_true", help="Show build output"
     )
 
     # detect command
-    detect_parser = subparsers.add_parser(
-        "detect",
-        help="Analyze a gen~ export",
-        description="Detect buffers, I/O counts, and patches needed.",
+    detect_parser = subparsers.add_parser("detect", help="Analyze a gen~ export")
+    detect_parser.add_argument(
+        "export_path", type=Path, help="Path to gen~ export directory"
     )
     detect_parser.add_argument(
-        "export_path",
-        type=Path,
-        help="Path to the gen~ export directory",
-    )
-    detect_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output in JSON format",
+        "--json", action="store_true", help="Output in JSON format"
     )
 
     # patch command
     patch_parser = subparsers.add_parser(
-        "patch",
-        help="Apply platform-specific patches",
-        description="Apply patches like exp2f -> exp2 fix for macOS.",
+        "patch", help="Apply platform-specific patches"
     )
     patch_parser.add_argument(
-        "target_path",
-        type=Path,
-        help="Path to the project or gen~ export directory",
+        "target_path", type=Path, help="Path to project or gen~ export dir"
     )
     patch_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be done without modifying files",
+        "--dry-run", action="store_true", help="Show what would be done"
     )
 
     # list command
-    subparsers.add_parser(
-        "list",
-        help="List available target platforms",
-        description="Show all supported target platforms.",
-    )
+    subparsers.add_parser("list", help="List available target platforms")
 
     # cache command
-    subparsers.add_parser(
-        "cache",
-        help="Show cached SDKs and dependencies",
-        description="Show paths and status of cached SDKs and dependencies.",
-    )
+    subparsers.add_parser("cache", help="Show cached SDKs and dependencies")
 
     # manifest command
-    manifest_parser = subparsers.add_parser(
-        "manifest",
-        help="Emit a JSON manifest for a gen~ export",
-        description="Parse a gen~ export and emit the Manifest IR as JSON to stdout.",
+    manifest_parser = subparsers.add_parser("manifest", help="Emit JSON manifest")
+    manifest_parser.add_argument(
+        "export_path", type=Path, help="Path to gen~ export directory"
     )
     manifest_parser.add_argument(
+        "--buffers", nargs="+", help="Buffer names (overrides auto-detection)"
+    )
+
+    # chain command
+    chain_parser = subparsers.add_parser(
+        "chain", help="Multi-plugin chain mode (Circle)"
+    )
+    chain_parser.add_argument(
         "export_path",
         type=Path,
-        help="Path to the gen~ export directory",
+        help="Path to gen~ export directory (base for chain nodes)",
     )
-    manifest_parser.add_argument(
-        "--buffers",
-        nargs="+",
-        help="Buffer names (overrides auto-detection)",
+    chain_parser.add_argument(
+        "--graph",
+        type=Path,
+        required=True,
+        help="JSON graph file for multi-plugin chain",
+    )
+    chain_parser.add_argument(
+        "-n",
+        "--name",
+        required=True,
+        help="Name for the chain project",
+    )
+    chain_parser.add_argument(
+        "-p",
+        "--platform",
+        default="circle",
+        help="Target platform (default: circle)",
+    )
+    chain_parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        help="Output directory (default: ./<name>)",
+    )
+    chain_parser.add_argument(
+        "--export",
+        type=Path,
+        action="append",
+        dest="exports",
+        help="Additional export path (can be repeated)",
+    )
+    chain_parser.add_argument(
+        "--no-patch", action="store_true", help="Skip platform patches"
+    )
+    chain_parser.add_argument("--board", help="Board variant")
+    chain_parser.add_argument("--no-build", action="store_true", help="Skip building")
+    chain_parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done"
     )
 
-    # graph command (only available when pydantic is installed)
+    # graph subcommands (compile, validate, dot, sim)
     try:
-        from gen_dsp.graph.cli import add_graph_subparser
+        from gen_dsp.graph.cli import (
+            add_compile_parser,
+            add_validate_parser,
+            add_dot_parser,
+            add_sim_parser,
+        )
 
-        add_graph_subparser(subparsers)
+        add_compile_parser(subparsers)
+        add_validate_parser(subparsers)
+        add_dot_parser(subparsers)
+        add_sim_parser(subparsers)
     except ImportError:
         pass
 
     return parser
 
 
-def cmd_init(args: argparse.Namespace) -> int:
-    """Handle the init command."""
-    # Branch to dsp-graph mode if --from-graph is provided
-    if getattr(args, "from_graph", None):
-        return cmd_init_from_graph(args)
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
 
-    # Branch to chain mode if --graph is provided
-    if args.graph:
-        return cmd_init_chain(args)
 
-    if args.export_path is None:
-        print("Error: export_path is required (or use --from-graph)", file=sys.stderr)
+def _cmd_default(argv: list[str]) -> int:
+    """Handle the default command: <source> -p <platform> [flags]."""
+    parser = _make_default_parser()
+    args = parser.parse_args(argv)
+
+    source = args.source.resolve()
+
+    # Auto-detect source type
+    if source.is_file() and source.suffix in (".gdsp", ".json"):
+        return _cmd_default_graph(args, source)
+    elif source.is_dir():
+        return _cmd_default_export(args, source)
+    else:
+        print(
+            f"Error: source not found or unrecognized type: {source}", file=sys.stderr
+        )
+        print(
+            "Expected: directory (gen~ export), .gdsp file, or .json file",
+            file=sys.stderr,
+        )
         return 1
 
-    export_path = args.export_path.resolve()
+
+def _cmd_default_graph(args: argparse.Namespace, graph_path: Path) -> int:
+    """Handle default command with a graph file source."""
+    try:
+        from gen_dsp.graph import _require_dsp_graph
+
+        _require_dsp_graph()
+    except ImportError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    from gen_dsp.graph.models import Graph
+    from gen_dsp.graph.validate import validate_graph
+
+    # Infer name
+    if args.name is None:
+        args.name = graph_path.stem
+        if not args.name:
+            print("Error: could not infer name from graph file", file=sys.stderr)
+            return 1
+
+    # Load graph
+    try:
+        if graph_path.suffix == ".gdsp":
+            from gen_dsp.graph.dsl import parse_file as parse_gdsp
+
+            parsed = parse_gdsp(graph_path)
+            assert isinstance(parsed, Graph)
+            graph = parsed
+        else:
+            text = graph_path.read_text()
+            data = json.loads(text)
+            graph = Graph.model_validate(data)
+    except Exception as e:
+        print(f"Error loading graph: {e}", file=sys.stderr)
+        return 1
+
+    errors = validate_graph(graph)
+    if errors:
+        print("Graph validation errors:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+
+    # Create config
+    config = ProjectConfig(
+        name=args.name,
+        platform=args.platform,
+        buffers=[],
+        apply_patches=False,
+        output_dir=args.output,
+        shared_cache=not getattr(args, "no_shared_cache", False),
+    )
+
+    config_errors = config.validate()
+    if config_errors:
+        print("Configuration errors:", file=sys.stderr)
+        for config_err in config_errors:
+            print(f"  - {config_err}", file=sys.stderr)
+        return 1
+
+    output_dir = (
+        args.output
+        if args.output
+        else Path.cwd() / "build" / f"{args.name}_{args.platform}"
+    )
+
+    if args.dry_run:
+        print(f"Would create project at: {output_dir}")
+        print(f"  Source: dsp-graph ({graph_path.name})")
+        print(f"  Graph: {graph.name}")
+        print(f"  Platform: {args.platform}")
+        print(f"  Inputs: {len(graph.inputs)}")
+        print(f"  Outputs: {len(graph.outputs)}")
+        print(f"  Parameters: {len(graph.params)}")
+        if not args.no_build:
+            print("  Would build after creating")
+        return 0
+
+    # Generate project
+    try:
+        generator = ProjectGenerator.from_graph(graph, config)
+        project_dir = generator.generate(output_dir)
+        print(f"Project created at: {project_dir}")
+        print("  Source: dsp-graph")
+        print(f"  Platform: {args.platform}")
+        if graph.params:
+            print(f"  Parameters: {', '.join(p.name for p in graph.params)}")
+    except Exception as e:
+        print(f"Error creating project: {e}", file=sys.stderr)
+        return 1
+
+    # Build unless --no-build or --dry-run
+    if not args.no_build:
+        try:
+            builder = Builder(project_dir)
+            result = builder.build(target_platform=args.platform)
+            if result.success:
+                print("Build successful!")
+                if result.output_file:
+                    print(f"Output: {result.output_file}")
+            else:
+                print("Build failed!", file=sys.stderr)
+                if result.stderr:
+                    print(result.stderr, file=sys.stderr)
+                return 1
+        except GenExtError as e:
+            print(f"Build error: {e}", file=sys.stderr)
+            return 1
+    else:
+        print()
+        print("Next steps:")
+        print(f"  cd {project_dir}")
+        platform_impl = get_platform(args.platform)
+        for instruction in platform_impl.get_build_instructions():
+            print(f"  {instruction}")
+
+    return 0
+
+
+def _cmd_default_export(args: argparse.Namespace, export_path: Path) -> int:
+    """Handle default command with a gen~ export directory source."""
+    # Infer name
+    if args.name is None:
+        args.name = export_path.name
+        if not args.name:
+            print("Error: could not infer name from export path", file=sys.stderr)
+            return 1
 
     # Parse the export
     try:
@@ -314,19 +499,6 @@ def cmd_init(args: argparse.Namespace) -> int:
     if invalid:
         print(f"Error: Invalid buffer names: {invalid}", file=sys.stderr)
         print("Buffer names must be valid C identifiers.", file=sys.stderr)
-        return 1
-
-    # Reject --shared-cache on non-CMake platforms
-    cmake_platforms = {"clap", "vst3", "lv2", "sc"}
-    if (
-        args.shared_cache
-        and args.platform not in cmake_platforms
-        and args.platform != "both"
-    ):
-        print(
-            f"Error: --shared-cache is only valid for {', '.join(sorted(cmake_platforms))}",
-            file=sys.stderr,
-        )
         return 1
 
     # Reject --board on non-embedded platforms
@@ -355,7 +527,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         buffers=buffers,
         apply_patches=not args.no_patch,
         output_dir=args.output,
-        shared_cache=args.shared_cache,
+        shared_cache=not args.no_shared_cache,
         board=args.board,
         no_midi=args.no_midi,
         midi_gate=args.midi_gate,
@@ -374,7 +546,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     # Determine output directory
-    output_dir = args.output if args.output else Path.cwd() / args.name
+    output_dir = (
+        args.output
+        if args.output
+        else Path.cwd() / "build" / f"{args.name}_{args.platform}"
+    )
 
     if args.dry_run:
         print(f"Would create project at: {output_dir}")
@@ -388,6 +564,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"  Buffers: {buffers if buffers else '(none)'}")
         if export_info.has_exp2f_issue and not args.no_patch:
             print("  Would apply exp2f -> exp2 patch")
+        if not args.no_build:
+            print("  Would build after creating")
         return 0
 
     # Generate project
@@ -399,209 +577,36 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"  Platform: {args.platform}")
         if buffers:
             print(f"  Buffers: {', '.join(buffers)}")
-        print()
-        print("Next steps:")
-        print(f"  cd {project_dir}")
-        if args.platform == "both":
-            # Show instructions for all platforms
-            for platform_name in list_platforms():
-                platform_impl = get_platform(platform_name)
-                print(f"  # For {platform_name}:")
-                for instruction in platform_impl.get_build_instructions():
-                    print(f"  {instruction}")
-        else:
-            # Show instructions for specific platform
-            platform_impl = get_platform(args.platform)
-            for instruction in platform_impl.get_build_instructions():
-                print(f"  {instruction}")
     except GenExtError as e:
         print(f"Error creating project: {e}", file=sys.stderr)
         return 1
 
-    return 0
-
-
-def cmd_init_from_graph(args: argparse.Namespace) -> int:
-    """Handle init command with --from-graph (dsp-graph JSON)."""
-    import json
-
-    try:
-        from gen_dsp.graph import _require_dsp_graph
-
-        _require_dsp_graph()
-    except ImportError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
-
-    from gen_dsp.graph.models import Graph
-    from gen_dsp.graph.validate import validate_graph
-    from gen_dsp.core.project import ProjectGenerator, ProjectConfig
-
-    graph_path = args.from_graph.resolve()
-    if not graph_path.is_file():
-        print(f"Error: graph file not found: {graph_path}", file=sys.stderr)
-        return 1
-
-    # Load and validate graph
-    try:
-        text = graph_path.read_text()
-        data = json.loads(text)
-        graph = Graph.model_validate(data)
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"Error loading graph: {e}", file=sys.stderr)
-        return 1
-
-    errors = validate_graph(graph)
-    if errors:
-        print("Graph validation errors:", file=sys.stderr)
-        for err in errors:
-            print(f"  - {err}", file=sys.stderr)
-        return 1
-
-    # Optionally optimize
-    if getattr(args, "optimize_graph", False):
-        from gen_dsp.graph.optimize import optimize_graph
-
-        graph, _stats = optimize_graph(graph)
-
-    # Create config
-    config = ProjectConfig(
-        name=args.name,
-        platform=args.platform,
-        buffers=[],
-        apply_patches=False,
-        output_dir=args.output,
-        shared_cache=getattr(args, "shared_cache", False),
-    )
-
-    # Validate
-    config_errors = config.validate()
-    if config_errors:
-        print("Configuration errors:", file=sys.stderr)
-        for config_err in config_errors:
-            print(f"  - {config_err}", file=sys.stderr)
-        return 1
-
-    # Determine output directory
-    output_dir = args.output if args.output else Path.cwd() / args.name
-
-    if getattr(args, "dry_run", False):
-        print(f"Would create project at: {output_dir}")
-        print(f"  Source: dsp-graph ({graph_path.name})")
-        print(f"  Graph: {graph.name}")
-        print(f"  Platform: {args.platform}")
-        print(f"  Inputs: {len(graph.inputs)}")
-        print(f"  Outputs: {len(graph.outputs)}")
-        print(f"  Parameters: {len(graph.params)}")
-        return 0
-
-    # Generate project
-    try:
-        generator = ProjectGenerator.from_graph(graph, config)
-        project_dir = generator.generate(output_dir)
-        print(f"Project created at: {project_dir}")
-        print("  Source: dsp-graph")
-        print(f"  Platform: {args.platform}")
-        if graph.params:
-            print(f"  Parameters: {', '.join(p.name for p in graph.params)}")
+    # Build unless --no-build or --dry-run
+    if not args.no_build:
+        try:
+            builder = Builder(project_dir)
+            result = builder.build(target_platform=args.platform)
+            if result.success:
+                print("Build successful!")
+                if result.output_file:
+                    print(f"Output: {result.output_file}")
+            else:
+                print("Build failed!", file=sys.stderr)
+                if result.stderr:
+                    print(result.stderr, file=sys.stderr)
+                return 1
+        except GenExtError as e:
+            print(f"Build error: {e}", file=sys.stderr)
+            return 1
+    else:
         print()
         print("Next steps:")
         print(f"  cd {project_dir}")
         platform_impl = get_platform(args.platform)
         for instruction in platform_impl.get_build_instructions():
             print(f"  {instruction}")
-    except Exception as e:
-        print(f"Error creating project: {e}", file=sys.stderr)
-        return 1
 
     return 0
-
-
-def cmd_init_chain(args: argparse.Namespace) -> int:
-    """Handle init command in chain mode (--graph provided).
-
-    Tries Phase 1 (linear chain) first. If the graph is non-linear,
-    falls through to Phase 2 (DAG) path.
-    """
-    from gen_dsp.core.graph import (
-        parse_graph,
-        validate_linear_chain,
-        validate_dag,
-    )
-    from gen_dsp.core.graph_init import (
-        resolve_export_dirs,
-        init_chain_linear,
-        init_chain_dag,
-    )
-
-    # Validate platform
-    if args.platform != "circle":
-        print(
-            "Error: --graph is currently only supported for the circle platform",
-            file=sys.stderr,
-        )
-        return 1
-
-    graph_path = args.graph.resolve()
-
-    # Parse graph
-    try:
-        graph = parse_graph(graph_path)
-    except GenExtError as e:
-        print(f"Error parsing graph: {e}", file=sys.stderr)
-        return 1
-
-    # Try linear chain validation first (Phase 1)
-    linear_errors = validate_linear_chain(graph)
-    is_linear = len(linear_errors) == 0
-
-    if not is_linear:
-        # Try DAG validation (Phase 2)
-        dag_errors = validate_dag(graph)
-        if dag_errors:
-            print("Graph validation errors:", file=sys.stderr)
-            for err in dag_errors:
-                print(f"  - {err}", file=sys.stderr)
-            return 1
-
-    # Resolve export directories
-    export_dirs = resolve_export_dirs(args.export_path.resolve(), graph, args.exports)
-
-    # Determine output directory
-    output_dir = args.output if args.output else Path.cwd() / args.name
-    output_dir = Path(output_dir).resolve()
-
-    config = ProjectConfig(
-        name=args.name,
-        platform="circle",
-        buffers=[],
-        apply_patches=not args.no_patch,
-        output_dir=args.output,
-        board=args.board,
-    )
-
-    if is_linear:
-        return init_chain_linear(
-            graph,
-            export_dirs,
-            output_dir,
-            args.name,
-            config,
-            apply_patches=not args.no_patch,
-            dry_run=args.dry_run,
-            board=args.board,
-        )
-    else:
-        return init_chain_dag(
-            graph,
-            export_dirs,
-            output_dir,
-            args.name,
-            config,
-            apply_patches=not args.no_patch,
-            dry_run=args.dry_run,
-            board=args.board,
-        )
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -630,7 +635,6 @@ def cmd_build(args: argparse.Namespace) -> int:
             if not args.verbose and result.stderr:
                 print(result.stderr, file=sys.stderr)
             elif not args.verbose and result.stdout:
-                # Show last lines of stdout for errors
                 lines = result.stdout.strip().split("\n")
                 for line in lines[-20:]:
                     print(line, file=sys.stderr)
@@ -752,7 +756,6 @@ def cmd_cache(args: argparse.Namespace) -> int:
     from gen_dsp.platforms.daisy import _resolve_libdaisy_dir, LIBDAISY_VERSION
     from gen_dsp.platforms.vcvrack import _resolve_rack_dir
 
-    # Resolve effective cache dir (GEN_DSP_CACHE_DIR overrides OS default)
     env_cache = os.environ.get("GEN_DSP_CACHE_DIR")
     if env_cache:
         cache_dir = Path(env_cache)
@@ -762,10 +765,8 @@ def cmd_cache(args: argparse.Namespace) -> int:
         print(f"Cache directory: {cache_dir}")
     print()
 
-    # FetchContent cache (CMake platforms that fetch SDKs)
     print("FetchContent (clap, lv2, sc, vst3):")
     if cache_dir.is_dir():
-        # FetchContent creates *-src, *-build, *-subbuild; only show -src
         src_dirs = sorted(
             d.name
             for d in cache_dir.iterdir()
@@ -783,7 +784,6 @@ def cmd_cache(args: argparse.Namespace) -> int:
         print("  (not created)")
     print()
 
-    # Rack SDK
     rack_dir = _resolve_rack_dir()
     rack_present = (rack_dir / "Makefile").is_file()
     print("Rack SDK (vcvrack):")
@@ -791,7 +791,6 @@ def cmd_cache(args: argparse.Namespace) -> int:
     print(f"  Status: {'present' if rack_present else 'not downloaded'}")
     print()
 
-    # libDaisy
     libdaisy_dir = _resolve_libdaisy_dir()
     libdaisy_present = (libdaisy_dir / "core" / "Makefile").is_file()
     libdaisy_built = (libdaisy_dir / "build" / "libdaisy.a").is_file()
@@ -807,39 +806,133 @@ def cmd_cache(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: Optional[list[str]] = None) -> int:
-    """Main entry point."""
-    parser = create_parser()
+def cmd_chain(args: argparse.Namespace) -> int:
+    """Handle the chain command (multi-plugin chain mode, Circle only)."""
+    from gen_dsp.core.graph import (
+        parse_graph,
+        validate_linear_chain,
+        validate_dag,
+    )
+    from gen_dsp.core.graph_init import (
+        resolve_export_dirs,
+        init_chain_linear,
+        init_chain_dag,
+    )
+
+    if args.platform != "circle":
+        print(
+            "Error: chain command is currently only supported for the circle platform",
+            file=sys.stderr,
+        )
+        return 1
+
+    graph_path = args.graph.resolve()
+
+    try:
+        graph = parse_graph(graph_path)
+    except GenExtError as e:
+        print(f"Error parsing graph: {e}", file=sys.stderr)
+        return 1
+
+    linear_errors = validate_linear_chain(graph)
+    is_linear = len(linear_errors) == 0
+
+    if not is_linear:
+        dag_errors = validate_dag(graph)
+        if dag_errors:
+            print("Graph validation errors:", file=sys.stderr)
+            for err in dag_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return 1
+
+    export_dirs = resolve_export_dirs(args.export_path.resolve(), graph, args.exports)
+
+    output_dir = args.output if args.output else Path.cwd() / "build" / args.name
+    output_dir = Path(output_dir).resolve()
+
+    config = ProjectConfig(
+        name=args.name,
+        platform="circle",
+        buffers=[],
+        apply_patches=not args.no_patch,
+        output_dir=args.output,
+        board=args.board,
+    )
+
+    if is_linear:
+        return init_chain_linear(
+            graph,
+            export_dirs,
+            output_dir,
+            args.name,
+            config,
+            apply_patches=not args.no_patch,
+            dry_run=args.dry_run,
+            board=args.board,
+        )
+    else:
+        return init_chain_dag(
+            graph,
+            export_dirs,
+            output_dir,
+            args.name,
+            config,
+            apply_patches=not args.no_patch,
+            dry_run=args.dry_run,
+            board=args.board,
+        )
+
+
+def _dispatch_subcommand(argv: list[str]) -> int:
+    """Parse and dispatch a subcommand."""
+    parser = _make_subcommand_parser()
     args = parser.parse_args(argv)
 
-    if args.command is None:
-        parser.print_help()
-        return 0
-
-    commands = {
-        "init": cmd_init,
+    handlers = {
         "build": cmd_build,
         "detect": cmd_detect,
         "patch": cmd_patch,
         "list": cmd_list,
         "cache": cmd_cache,
         "manifest": cmd_manifest,
+        "chain": cmd_chain,
     }
 
-    # Add graph command if dsp-graph is available
+    # Add graph subcommand handlers if available
     try:
-        from gen_dsp.graph.cli import cmd_graph
+        from gen_dsp.graph.cli import cmd_compile, cmd_validate, cmd_dot, cmd_simulate
 
-        commands["graph"] = cmd_graph
+        handlers["compile"] = cmd_compile
+        handlers["validate"] = cmd_validate
+        handlers["dot"] = cmd_dot
+        handlers["sim"] = cmd_simulate
     except ImportError:
         pass
 
-    handler = commands.get(args.command)
+    handler = handlers.get(args.command)
     if handler:
         return handler(args)
     else:
-        parser.print_help()
+        _print_help()
         return 1
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Main entry point."""
+    argv = argv if argv is not None else sys.argv[1:]
+
+    if not argv or argv[0] in ("-h", "--help"):
+        _print_help()
+        return 0
+
+    if argv[0] in ("-V", "--version"):
+        print(f"gen-dsp {__version__}")
+        return 0
+
+    if argv[0] in SUBCOMMANDS:
+        return _dispatch_subcommand(argv)
+    else:
+        return _cmd_default(argv)
 
 
 if __name__ == "__main__":

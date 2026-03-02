@@ -550,31 +550,6 @@ class TestAudioUnitBuildIntegration:
         # in JUCE's AudioUnit host when processing audio.
 
     @_skip_no_toolchain
-    def test_build_clean_rebuild(self, gigaverb_export: Path, tmp_path: Path):
-        """Test that clean + rebuild works via the platform API."""
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="au")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        platform = AudioUnitPlatform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert build_result.output_file.name == "gigaverb.component"
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        _validate_au(build_result.output_file, "gigaverb")
-
     @_skip_no_toolchain
     def test_build_au_polyphony(
         self,

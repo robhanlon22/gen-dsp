@@ -42,8 +42,8 @@ class ProjectConfig:
     # Output directory (if None, use current directory)
     output_dir: Optional[Path] = None
 
-    # Use shared FetchContent cache for CMake-based platforms (clap, vst3)
-    shared_cache: bool = False
+    # Use shared FetchContent cache for CMake-based platforms (clap, vst3, lv2, sc)
+    shared_cache: bool = True
 
     # Board variant for embedded platforms:
     #   Daisy: seed, pod, patch, patch_sm, field, petal, legio, versio
@@ -322,6 +322,11 @@ class ProjectGenerator:
             self.config.midi_mapping.num_voices = self.config.num_voices
         midi_defines = build_midi_defines(self.config.midi_mapping)
 
+        # 5b. Copy voice_alloc.h when polyphony is enabled
+        from gen_dsp.platforms import get_platform
+
+        get_platform(platform).copy_voice_alloc_header(output_dir, self.config)
+
         # 6. Copy platform-specific buffer header if exists
         import gen_dsp.templates as templates
 
@@ -393,9 +398,7 @@ class ProjectGenerator:
             total = manifest.num_inputs + manifest.num_outputs + manifest.num_params
             panel_hp = vcv._compute_panel_hp(total)
 
-            vcv._generate_plugin_json(
-                output_dir, self.config.name, manifest.num_inputs
-            )
+            vcv._generate_plugin_json(output_dir, self.config.name, manifest.num_inputs)
 
             res_dir = output_dir / "res"
             res_dir.mkdir(parents=True, exist_ok=True)

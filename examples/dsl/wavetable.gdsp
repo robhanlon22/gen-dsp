@@ -1,0 +1,18 @@
+# Wavetable oscillator: Buffer + Phasor + BufRead with linear interpolation.
+# A generator that reads from a 1024-sample wavetable at the given frequency.
+
+graph wavetable {
+    out output = sample
+
+    param freq 0.1..20000 = 440
+
+    buffer wt 1024
+    wt_len = buf_size(wt)
+
+    # Phasor produces 0..1 ramp at the desired frequency
+    phase = phasor(freq)
+
+    # Scale phasor to buffer index range and read with interpolation
+    idx    = phase * wt_len
+    sample = buf_read(wt, idx, interp=linear)
+}

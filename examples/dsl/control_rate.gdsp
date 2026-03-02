@@ -1,0 +1,21 @@
+# Control-rate parameter smoothing: demonstrates @control annotations
+# and the control_interval graph option.
+#
+# Smoothing nodes are marked @control so they run every 64 samples
+# instead of every sample, reducing CPU. The oscillator and output
+# run at full audio rate.
+
+graph smooth_synth (sr=48000, control=64) {
+    out output = result
+
+    param freq 20..20000 = 440
+    param amp  0..1      = 0.5
+
+    # Smooth parameters at control rate to avoid zipper noise
+    @control smooth_freq = smooth(freq, 0.999)
+    @control smooth_amp  = smooth(amp, 0.995)
+
+    # Audio-rate oscillator driven by smoothed frequency
+    osc    = sinosc(smooth_freq)
+    result = osc * smooth_amp
+}

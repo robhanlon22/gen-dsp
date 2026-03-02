@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14]
+
+### Fixed
+
+- **Graph: ChucK chugin naming** -- `_makefile_chuck()` in the graph adapter now capitalizes `lib_name` for `CHUGIN_NAME` and `-DCHUCK_EXT_NAME`, matching the gen~ export path (`ChuckPlatform._capitalize_name()`). Previously, a graph named `lowpass` produced `lowpass.chug` but ChucK's `@import "Lowpass"` expects `Lowpass.chug`.
+- **Graph: `SampleRate` node with id `sr` caused C++ redefinition error** -- The compiler emits `float sr = self->sr;` unconditionally in the perform function, but a `SampleRate` node with id `sr` (created implicitly by the DSL `sr=` option) also emitted `float sr = sr;`, causing a redefinition. Now skips the redundant declaration when `node.id == "sr"`.
+
+### Changed
+
+- **CLI: default output to `build/`** -- Projects are now generated under `build/{name}_{platform}` instead of the current directory. Pass `-o` to override.
+- **CLI: shared FetchContent cache on by default** -- CMake-based platforms (CLAP, VST3, LV2, SC) now use a shared OS-level cache (`~/Library/Caches/gen-dsp/fetchcontent/` on macOS) by default, so SDK downloads are reused across projects. Pass `--no-shared-cache` to disable. The old `--shared-cache` flag is replaced by `--no-shared-cache`.
+- **Tests: replaced clean-rebuild tests with example builds** -- Removed 7 `test_build_clean_rebuild` tests (which just re-ran cmake from scratch, adding ~70s). Replaced `TestBuildFromGdspFile`/`TestBuildFromJsonFile` (trivial inline graphs) with `TestBuildGdspExamples`, which parametrizes over all 11 `examples/dsl/*.gdsp` files and builds each as both PD and CLAP with validation. This is what caught the `SampleRate` codegen bug above.
+
+- **CLI: flat top-level command** -- The most common workflow is now `gen-dsp <source> -p <platform>` instead of `gen-dsp init <export> -n <name> -p <platform> -b`. Source type (gen~ export directory, `.gdsp` file, or `.json` graph file) is auto-detected. Name is inferred from source. Build runs by default (use `--no-build` to skip). The `init` subcommand is removed.
+- **CLI: build by default** -- Projects are built immediately after generation. Pass `--no-build` to skip (reversed polarity from the old `--build`/`-b` flag).
+- **CLI: `-p/--platform` is required** -- No more default platform. You must specify the target explicitly.
+- **CLI: graph subcommands flattened** -- `gen-dsp graph compile` is now `gen-dsp compile`, `gen-dsp graph validate` is now `gen-dsp validate`, `gen-dsp graph dot` is now `gen-dsp dot`, and `gen-dsp graph simulate` is now `gen-dsp sim`.
+- **CLI: `compile` is raw C++ only** -- The `-p/--platform` flag is removed from `compile`. To generate a platform project from a graph file, use the top-level command: `gen-dsp my.gdsp -p clap`.
+- **CLI: chain mode is a subcommand** -- `gen-dsp init <dir> --graph chain.json` is now `gen-dsp chain <dir> --graph chain.json`.
+
+### Added
+
+- **Graph DSL (`.gdsp`)** -- New line-oriented DSL for defining DSP graphs that compiles to `gen_dsp.graph.Graph` objects. Pure Python tokenizer + recursive-descent parser + compiler in `src/gen_dsp/graph/dsl.py`. Supports all graph node types: arithmetic, oscillators, filters, delays, buffers, history feedback, control-rate annotations, destructuring assignment, named constants, multi-graph files with subgraph calls, and inline composition (`>>`, `//`). Public API: `parse()`, `parse_file()`, `parse_multi()`. See `docs/graph/dsl.md` for the full specification.
+- **CLI: `.gdsp` file support** -- All graph subcommands (`compile`, `validate`, `dot`, `sim`) and the top-level command now accept `.gdsp` files directly, auto-detected by file extension. JSON remains supported.
+- **GDSP examples** -- 11 example `.gdsp` files in `examples/dsl/` covering stereo gain, feedback delay, filtered delay, FM synthesis, noise gate, allpass reverb, wavetable, signal routing, subtractive synth, polyphonic voice, and control-rate parameter smoothing.
+- **Sublime Text syntax highlighting** -- Syntax definition for `.gdsp` files at `docs/editors/sublime/GDSP.sublime-syntax` with scoping for all keywords, builtins, operators, and named constants.
+
 ## [0.1.13]
 
 ### Added

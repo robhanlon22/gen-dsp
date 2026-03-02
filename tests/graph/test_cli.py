@@ -94,26 +94,6 @@ class TestCompile:
         out = capsys.readouterr().out
         assert "test_graph_perform" in out
 
-    def test_compile_gen_dsp(self, graph_json: Path, tmp_path: Path) -> None:
-        out_dir = tmp_path / "gen_dsp_build"
-        rc = main(
-            ["compile", str(graph_json), "--gen-dsp", "chuck", "-o", str(out_dir)]
-        )
-        assert rc == 0
-        assert (out_dir / "test_graph.cpp").exists()
-        assert (out_dir / "_ext_chuck.cpp").exists()
-        assert (out_dir / "manifest.json").exists()
-
-    def test_compile_gen_dsp_requires_output(
-        self,
-        graph_json: Path,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        rc = main(["compile", str(graph_json), "--gen-dsp", "chuck"])
-        assert rc == 1
-        err = capsys.readouterr().err
-        assert "--gen-dsp requires -o" in err
-
 
 class TestValidate:
     def test_validate_valid(
@@ -236,7 +216,7 @@ class TestSimulate:
         p.write_text(json.dumps(data))
         out_dir = tmp_path / "sim_out"
 
-        rc = main(["simulate", str(p), "-n", "100", "-o", str(out_dir)])
+        rc = main(["sim", str(p), "-n", "100", "-o", str(out_dir)])
         assert rc == 0
         wav_path = out_dir / "out1.wav"
         assert wav_path.exists()
@@ -265,7 +245,7 @@ class TestSimulate:
 
         rc = main(
             [
-                "simulate",
+                "sim",
                 str(p),
                 "-i",
                 f"in1={input_wav}",
@@ -305,7 +285,7 @@ class TestSimulate:
 
         rc = main(
             [
-                "simulate",
+                "sim",
                 str(p),
                 "-i",
                 f"in1={input_wav}",
@@ -335,7 +315,7 @@ class TestSimulate:
         p = tmp_path / "gain.json"
         p.write_text(json.dumps(data))
 
-        rc = main(["simulate", str(p), "-n", "100"])
+        rc = main(["sim", str(p), "-n", "100"])
         assert rc == 1
         assert "missing input" in capsys.readouterr().err
 
@@ -352,7 +332,7 @@ class TestSimulate:
         p = tmp_path / "gen.json"
         p.write_text(json.dumps(data))
 
-        rc = main(["simulate", str(p)])
+        rc = main(["sim", str(p)])
         assert rc == 1
         assert "--samples" in capsys.readouterr().err
 
@@ -370,7 +350,7 @@ class TestSimulate:
         p.write_text(json.dumps(data))
         out_dir = tmp_path / "opt_out"
 
-        rc = main(["simulate", str(p), "-n", "100", "-o", str(out_dir), "--optimize"])
+        rc = main(["sim", str(p), "-n", "100", "-o", str(out_dir), "--optimize"])
         assert rc == 0
         assert (out_dir / "out1.wav").exists()
 
@@ -405,3 +385,117 @@ class TestErrorHandling:
         assert rc == 1
         err = capsys.readouterr().err
         assert "error:" in err
+
+
+# ---------------------------------------------------------------------------
+# .gdsp CLI integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def gdsp_file(tmp_path: Path) -> Path:
+    """Write a minimal .gdsp file and return its path."""
+    p = tmp_path / "gain.gdsp"
+    p.write_text(
+        """
+        graph gain {
+            in input
+            out output = scaled
+            param vol 0..2 = 1.0
+            scaled = input * vol
+        }
+        """
+    )
+    return p
+
+
+class TestGdspCompile:
+    def test_compile_gdsp_to_stdout(
+        self, gdsp_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = main(["compile", str(gdsp_file)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "GainState" in out
+        assert "gain_perform" in out
+
+    def test_compile_gdsp_to_dir(self, gdsp_file: Path, tmp_path: Path) -> None:
+        out_dir = tmp_path / "build"
+        rc = main(["compile", str(gdsp_file), "-o", str(out_dir)])
+        assert rc == 0
+        cpp = out_dir / "gain.cpp"
+        assert cpp.exists()
+
+
+class TestGdspValidate:
+    def test_validate_gdsp(
+        self, gdsp_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = main(["validate", str(gdsp_file)])
+        assert rc == 0
+        assert "valid" in capsys.readouterr().out
+
+    def test_validate_gdsp_syntax_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bad = tmp_path / "bad.gdsp"
+        bad.write_text("graph t {")
+        rc = main(["compile", str(bad)])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+
+    def test_validate_gdsp_compile_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        bad = tmp_path / "bad.gdsp"
+        bad.write_text(
+            """
+            graph t {
+                out o = y
+                y = undefined_func(1)
+            }
+            """
+        )
+        rc = main(["compile", str(bad)])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "error:" in err
+
+
+class TestGdspDot:
+    def test_dot_gdsp(
+        self, gdsp_file: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = main(["dot", str(gdsp_file)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "digraph" in out
+        assert "gain" in out
+
+
+class TestGdspMultiGraph:
+    def test_compile_multi_graph_gdsp(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Multi-graph .gdsp uses last graph (which references earlier ones)."""
+        p = tmp_path / "multi.gdsp"
+        p.write_text(
+            """
+            graph inner {
+                in x
+                out output = y
+                param coeff 0..1 = 0.5
+                y = onepole(x, coeff)
+            }
+            graph outer {
+                in input
+                out output = result
+                result = inner(x=input, coeff=0.3)
+            }
+            """
+        )
+        rc = main(["compile", str(p)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "OuterState" in out

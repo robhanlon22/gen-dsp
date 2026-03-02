@@ -1,0 +1,18 @@
+{
+  "name": "stereo_gain",
+  "inputs": [
+    {"id": "in1"},
+    {"id": "in2"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "scaled1"},
+    {"id": "out2", "source": "scaled2"}
+  ],
+  "params": [
+    {"name": "gain", "min": 0.0, "max": 2.0, "default": 1.0}
+  ],
+  "nodes": [
+    {"id": "scaled1", "op": "mul", "a": "in1", "b": "gain"},
+    {"id": "scaled2", "op": "mul", "a": "in2", "b": "gain"}
+  ]
+}

@@ -55,6 +55,7 @@ From code review (2026-02-16). R1-R9, R11, R12 completed.
 - [ ] **`build` command could auto-detect platform** from `manifest.json` in project directory, removing the need for `-p <platform>`.
 - [ ] **`cache clean` subcommand.** Let users reclaim disk space from downloaded SDKs.
 - [ ] **`--board` dynamic listing.** Consider `gen-dsp list --boards daisy` to dynamically list valid boards instead of hardcoding in help text.
+- [ ] **Rename `graph dot` subcommand to `graph viz`.** The current name is implementation-specific (Graphviz DOT format). Renaming to `viz` allows for future visualization methods beyond DOT (e.g., SVG, interactive web view).
 
 #### Testing
 

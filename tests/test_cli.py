@@ -5,51 +5,57 @@ from pathlib import Path
 
 import pytest
 
-from gen_dsp.cli import main, create_parser
+from gen_dsp.cli import main
 
 
-class TestCreateParser:
-    """Tests for create_parser function."""
+class TestVersionAndHelp:
+    """Tests for --version and --help."""
 
-    def test_parser_has_version(self):
-        """Test parser has version argument."""
-        parser = create_parser()
-        # This should not raise
-        with pytest.raises(SystemExit) as exc_info:
-            parser.parse_args(["--version"])
-        assert exc_info.value.code == 0
+    def test_version_flag(self, capsys):
+        """Test --version prints version and exits 0."""
+        result = main(["--version"])
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "gen-dsp" in captured.out
 
-    def test_parser_has_subcommands(self):
-        """Test parser has expected subcommands."""
-        parser = create_parser()
-        # Test that subcommands are recognized
-        args = parser.parse_args(["init", ".", "-n", "test"])
-        assert args.command == "init"
+    def test_short_version_flag(self, capsys):
+        """Test -V prints version and exits 0."""
+        result = main(["-V"])
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "gen-dsp" in captured.out
 
-        args = parser.parse_args(["build", "."])
-        assert args.command == "build"
+    def test_help_flag(self, capsys):
+        """Test --help prints help and exits 0."""
+        result = main(["--help"])
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "gen-dsp" in captured.out
 
-        args = parser.parse_args(["detect", "."])
-        assert args.command == "detect"
+    def test_no_args_shows_help(self, capsys):
+        """Test that running without args shows help."""
+        result = main([])
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "gen-dsp" in captured.out
 
-        args = parser.parse_args(["patch", "."])
-        assert args.command == "patch"
 
+class TestDefaultCommand:
+    """Tests for the default command (positional source)."""
 
-class TestInitCommand:
-    """Tests for init command."""
-
-    def test_init_dry_run(self, gigaverb_export: Path, tmp_path: Path, capsys):
-        """Test init command with --dry-run."""
+    def test_dry_run_export(self, gigaverb_export: Path, tmp_path: Path, capsys):
+        """Test dry run with gen~ export directory."""
         output_dir = tmp_path / "output"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
+                "-p",
+                "pd",
                 "-n",
                 "testverb",
                 "-o",
                 str(output_dir),
+                "--no-build",
                 "--dry-run",
             ]
         )
@@ -59,17 +65,19 @@ class TestInitCommand:
         assert "Would create project" in captured.out
         assert not output_dir.exists()
 
-    def test_init_creates_project(self, gigaverb_export: Path, tmp_path: Path):
-        """Test init command creates project."""
+    def test_creates_project(self, gigaverb_export: Path, tmp_path: Path):
+        """Test default command creates project from export dir."""
         output_dir = tmp_path / "testverb"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
+                "-p",
+                "pd",
                 "-n",
                 "testverb",
                 "-o",
                 str(output_dir),
+                "--no-build",
             ]
         )
 
@@ -78,17 +86,19 @@ class TestInitCommand:
         assert (output_dir / "Makefile").is_file()
         assert (output_dir / "gen").is_dir()
 
-    def test_init_with_buffers(self, gigaverb_export: Path, tmp_path: Path):
-        """Test init command with explicit buffers."""
+    def test_with_buffers(self, gigaverb_export: Path, tmp_path: Path):
+        """Test with explicit buffers."""
         output_dir = tmp_path / "testverb"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
+                "-p",
+                "pd",
                 "-n",
                 "testverb",
                 "-o",
                 str(output_dir),
+                "--no-build",
                 "--buffers",
                 "buf1",
                 "buf2",
@@ -101,44 +111,19 @@ class TestInitCommand:
         assert "WRAPPER_BUFFER_NAME_0 buf1" in buffer_h
         assert "WRAPPER_BUFFER_NAME_1 buf2" in buffer_h
 
-    def test_init_shared_cache_flag_parsed(self):
-        """Test that --shared-cache flag is parsed."""
-        parser = create_parser()
-        args = parser.parse_args(
-            [
-                "init",
-                ".",
-                "-n",
-                "test",
-                "-p",
-                "clap",
-                "--shared-cache",
-            ]
-        )
-        assert args.shared_cache is True
-
-    def test_init_shared_cache_default_off(self):
-        """Test that --shared-cache defaults to False."""
-        parser = create_parser()
-        args = parser.parse_args(["init", ".", "-n", "test"])
-        assert args.shared_cache is False
-
-    def test_init_shared_cache_creates_project(
-        self, gigaverb_export: Path, tmp_path: Path
-    ):
-        """Test init with --shared-cache creates project with cache enabled."""
+    def test_shared_cache_on_by_default(self, gigaverb_export: Path, tmp_path: Path):
+        """Test that shared cache is enabled by default for cmake platforms."""
         output_dir = tmp_path / "testverb"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
-                "-n",
-                "testverb",
                 "-p",
                 "clap",
+                "-n",
+                "testverb",
                 "-o",
                 str(output_dir),
-                "--shared-cache",
+                "--no-build",
             ]
         )
 
@@ -146,44 +131,42 @@ class TestInitCommand:
         cmake = (output_dir / "CMakeLists.txt").read_text()
         assert "elseif(ON)" in cmake
 
-    def test_init_shared_cache_rejects_non_cmake(
-        self, gigaverb_export: Path, tmp_path: Path, capsys
-    ):
-        """Test --shared-cache errors for non-CMake platforms."""
+    def test_no_shared_cache_disables(self, gigaverb_export: Path, tmp_path: Path):
+        """Test --no-shared-cache produces OFF."""
         output_dir = tmp_path / "testverb"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
+                "-p",
+                "clap",
                 "-n",
                 "testverb",
-                "-p",
-                "pd",
                 "-o",
                 str(output_dir),
-                "--shared-cache",
+                "--no-build",
+                "--no-shared-cache",
             ]
         )
 
-        assert result == 1
-        captured = capsys.readouterr()
-        assert "--shared-cache" in captured.err
+        assert result == 0
+        cmake = (output_dir / "CMakeLists.txt").read_text()
+        assert "elseif(OFF)" in cmake
 
-    def test_init_board_rejects_non_daisy(
+    def test_board_rejects_non_daisy(
         self, gigaverb_export: Path, tmp_path: Path, capsys
     ):
         """Test --board errors for non-daisy platforms."""
         output_dir = tmp_path / "testverb"
         result = main(
             [
-                "init",
                 str(gigaverb_export),
-                "-n",
-                "testverb",
                 "-p",
                 "pd",
+                "-n",
+                "testverb",
                 "-o",
                 str(output_dir),
+                "--no-build",
                 "--board",
                 "pod",
             ]
@@ -193,16 +176,18 @@ class TestInitCommand:
         captured = capsys.readouterr()
         assert "--board" in captured.err
 
-    def test_init_invalid_name(self, gigaverb_export: Path, tmp_path: Path, capsys):
-        """Test init command with invalid name."""
+    def test_invalid_name(self, gigaverb_export: Path, tmp_path: Path, capsys):
+        """Test with invalid name."""
         result = main(
             [
-                "init",
                 str(gigaverb_export),
+                "-p",
+                "pd",
                 "-n",
                 "123invalid",
                 "-o",
                 str(tmp_path / "output"),
+                "--no-build",
             ]
         )
 
@@ -210,20 +195,108 @@ class TestInitCommand:
         captured = capsys.readouterr()
         assert "not a valid C identifier" in captured.err
 
-    def test_init_invalid_export_path(self, tmp_path: Path, capsys):
-        """Test init command with non-existent export path."""
+    def test_invalid_export_path(self, tmp_path: Path, capsys):
+        """Test with non-existent export path."""
         result = main(
             [
-                "init",
                 str(tmp_path / "nonexistent"),
-                "-n",
-                "test",
+                "-p",
+                "pd",
             ]
         )
 
         assert result == 1
         captured = capsys.readouterr()
         assert "Error" in captured.err
+
+
+class TestAutoDetect:
+    """Tests for source type auto-detection."""
+
+    def test_detects_directory(self, gigaverb_export: Path, tmp_path: Path, capsys):
+        """Directory source is detected as gen~ export."""
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "pd",
+                "-o",
+                str(tmp_path / "out"),
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Would create project" in captured.out
+        assert "Export:" in captured.out
+
+    def test_detects_gdsp_file(self, tmp_path: Path, capsys):
+        """'.gdsp' file is detected as graph source."""
+        pytest.importorskip("pydantic")
+        graph_file = tmp_path / "lowpass.gdsp"
+        graph_file.write_text(
+            """
+            graph lowpass {
+                in input
+                out output = filt
+                param freq 20..20000 = 1000
+                filt = onepole(input, freq / 44100)
+            }
+            """
+        )
+        result = main(
+            [
+                str(graph_file),
+                "-p",
+                "chuck",
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "dsp-graph" in captured.out
+
+    def test_detects_json_file(self, tmp_path: Path, capsys):
+        """'.json' file is detected as graph source."""
+        pytest.importorskip("pydantic")
+        graph_file = tmp_path / "test.json"
+        data = {
+            "name": "test_graph",
+            "inputs": [{"id": "in1"}],
+            "outputs": [{"id": "out1", "source": "scaled"}],
+            "params": [{"name": "gain", "min": 0.0, "max": 2.0, "default": 1.0}],
+            "nodes": [{"id": "scaled", "op": "mul", "a": "in1", "b": "gain"}],
+        }
+        graph_file.write_text(json.dumps(data))
+        result = main(
+            [
+                str(graph_file),
+                "-p",
+                "pd",
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "dsp-graph" in captured.out
+
+    def test_unrecognized_source(self, tmp_path: Path, capsys):
+        """Unrecognized source type shows error."""
+        bad_file = tmp_path / "something.txt"
+        bad_file.write_text("hello")
+        result = main(
+            [
+                str(bad_file),
+                "-p",
+                "pd",
+            ]
+        )
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "unrecognized" in captured.err.lower() or "Error" in captured.err
 
 
 class TestDetectCommand:
@@ -277,7 +350,6 @@ class TestPatchCommand:
         result = main(["patch", str(gigaverb_export), "--dry-run"])
 
         assert result == 0
-        # Output depends on whether patches are needed
 
     def test_patch_invalid_path(self, tmp_path: Path, capsys):
         """Test patch command with invalid path."""
@@ -346,7 +418,7 @@ class TestCacheCommand:
         assert "Cache directory:" in captured.out
 
     def test_cache_shows_fetchcontent(self, capsys):
-        """Test cache command shows FetchContent status for SDK-fetching platforms."""
+        """Test cache command shows FetchContent status."""
         result = main(["cache"])
         assert result == 0
         captured = capsys.readouterr()
@@ -369,12 +441,200 @@ class TestCacheCommand:
         assert "libDaisy" in captured.out
 
 
-class TestMainNoCommand:
-    """Tests for main with no command."""
+class TestNameInference:
+    """Tests for name inference when -n is not provided."""
 
-    def test_no_command_shows_help(self, capsys):
-        """Test that running without command shows help."""
-        result = main([])
+    def test_infers_name_from_export_dir(
+        self, gigaverb_export: Path, tmp_path: Path, capsys
+    ):
+        """Infers name from export directory name when -n is omitted."""
+        output_dir = tmp_path / "output"
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "pd",
+                "-o",
+                str(output_dir),
+                "--no-build",
+                "--dry-run",
+            ]
+        )
         assert result == 0
         captured = capsys.readouterr()
-        assert "usage:" in captured.out.lower() or "gen-dsp" in captured.out
+        assert "Would create project" in captured.out
+
+    def test_infers_name_from_graph_file(self, tmp_path: Path, capsys):
+        """Infers name from graph file stem."""
+        pytest.importorskip("pydantic")
+        graph_file = tmp_path / "lowpass.gdsp"
+        graph_file.write_text(
+            """
+            graph lowpass {
+                in input
+                out output = filt
+                param freq 20..20000 = 1000
+                filt = onepole(input, freq / 44100)
+            }
+            """
+        )
+        result = main(
+            [
+                str(graph_file),
+                "-p",
+                "chuck",
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "lowpass" in captured.out
+
+    def test_explicit_name_overrides_inference(
+        self, gigaverb_export: Path, tmp_path: Path, capsys
+    ):
+        """Explicit -n overrides inferred name."""
+        output_dir = tmp_path / "output"
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "pd",
+                "-n",
+                "myverb",
+                "-o",
+                str(output_dir),
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+
+
+class TestOutputDirInference:
+    """Tests for default output directory {name}_{platform}."""
+
+    def test_output_dir_includes_platform(
+        self, gigaverb_export: Path, tmp_path: Path, capsys, monkeypatch
+    ):
+        """Default output dir is {name}_{platform}."""
+        monkeypatch.chdir(tmp_path)
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "chuck",
+                "-n",
+                "myverb",
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "myverb_chuck" in captured.out
+
+    def test_graph_output_dir_includes_platform(
+        self, tmp_path: Path, capsys, monkeypatch
+    ):
+        """Graph source default output dir is {stem}_{platform}."""
+        pytest.importorskip("pydantic")
+        monkeypatch.chdir(tmp_path)
+        graph_file = tmp_path / "foo.gdsp"
+        graph_file.write_text(
+            """
+            graph foo {
+                in input
+                out output = scaled
+                param gain 0..2 = 1
+                scaled = input * gain
+            }
+            """
+        )
+        result = main(
+            [
+                str(graph_file),
+                "-p",
+                "au",
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "foo_au" in captured.out
+
+
+class TestNoBuildFlag:
+    """Tests for --no-build flag (reversed polarity from old --build)."""
+
+    def test_dry_run_shows_build_intent(
+        self, gigaverb_export: Path, tmp_path: Path, capsys
+    ):
+        """Dry run without --no-build shows build intent."""
+        output_dir = tmp_path / "output"
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "pd",
+                "-n",
+                "testverb",
+                "-o",
+                str(output_dir),
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Would build after creating" in captured.out
+        assert not output_dir.exists()
+
+    def test_no_build_dry_run_omits_build_intent(
+        self, gigaverb_export: Path, tmp_path: Path, capsys
+    ):
+        """Dry run with --no-build does not show build intent."""
+        output_dir = tmp_path / "output"
+        result = main(
+            [
+                str(gigaverb_export),
+                "-p",
+                "pd",
+                "-n",
+                "testverb",
+                "-o",
+                str(output_dir),
+                "--no-build",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Would build after creating" not in captured.out
+
+    def test_graph_dry_run_shows_build_intent(self, tmp_path: Path, capsys):
+        """Graph source dry run without --no-build shows build intent."""
+        pytest.importorskip("pydantic")
+        graph_file = tmp_path / "gain.gdsp"
+        graph_file.write_text(
+            """
+            graph gain {
+                in input
+                out output = scaled
+                param vol 0..2 = 1
+                scaled = input * vol
+            }
+            """
+        )
+        result = main(
+            [
+                str(graph_file),
+                "-p",
+                "chuck",
+                "--dry-run",
+            ]
+        )
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Would build after creating" in captured.out

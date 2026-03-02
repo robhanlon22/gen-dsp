@@ -8,11 +8,12 @@ import shutil
 import struct
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+from tests.helpers import validate_vst3
 
 from gen_dsp.core.parser import GenExportParser
 from gen_dsp.core.project import ProjectGenerator, ProjectConfig
@@ -38,128 +39,6 @@ _can_build = _has_cmake and _has_cxx
 _skip_no_toolchain = pytest.mark.skipif(
     not _can_build, reason="cmake and C++ compiler required"
 )
-
-# -- Persistent validator build directory (reused across sessions) -------------
-_VALIDATOR_DIR = Path(__file__).resolve().parent.parent / "build" / ".vst3_validator"
-
-_VALIDATOR_CMAKE_TEMPLATE = textwrap.dedent("""\
-    cmake_minimum_required(VERSION 3.15)
-    project(vst3_validator_build)
-
-    include(FetchContent)
-    FetchContent_Declare(
-        vst3sdk
-        GIT_REPOSITORY https://github.com/steinbergmedia/vst3sdk.git
-        GIT_TAG v3.7.9_build_61
-        GIT_SHALLOW ON
-    )
-
-    set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES ON CACHE BOOL "" FORCE)
-    set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
-    set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE)
-
-    FetchContent_MakeAvailable(vst3sdk)
-""")
-
-
-@pytest.fixture(scope="session")
-def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
-    """Build the VST3 SDK validator once per session.
-
-    The validator binary persists in build/.vst3_validator/ so it is only
-    compiled on first run.  Returns None (and prints a warning) if the
-    build fails -- this lets the build integration tests still pass
-    without validation.
-    """
-    if not _can_build:
-        return None
-
-    _VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
-    build_dir = _VALIDATOR_DIR / "build"
-    build_dir.mkdir(exist_ok=True)
-
-    # Check for a previously built validator
-    for candidate in build_dir.glob("**/validator"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-
-    # Write the CMakeLists.txt that builds just the validator
-    cmakelists = _VALIDATOR_DIR / "CMakeLists.txt"
-    cmakelists.write_text(_VALIDATOR_CMAKE_TEMPLATE)
-
-    env = _build_env()
-
-    # Use FETCHCONTENT_SOURCE_DIR to reuse already-downloaded SDK source
-    # without sharing the build tree (which causes cross-project
-    # contamination when FETCHCONTENT_BASE_DIR is shared).
-    cmake_configure = ["cmake", "..", "-DCMAKE_BUILD_TYPE=Release"]
-    sdk_src = fetchcontent_cache / "vst3sdk-src"
-    if sdk_src.is_dir():
-        cmake_configure.append(f"-DFETCHCONTENT_SOURCE_DIR_VST3SDK={sdk_src}")
-
-    # Configure
-    result = subprocess.run(
-        cmake_configure,
-        cwd=build_dir,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=env,
-    )
-    if result.returncode != 0:
-        print(f"VST3 validator cmake configure failed:\n{result.stderr}")
-        return None
-
-    # Build only the validator target
-    result = subprocess.run(
-        ["cmake", "--build", ".", "--target", "validator"],
-        cwd=build_dir,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env=env,
-    )
-    if result.returncode != 0:
-        print(f"VST3 validator build failed:\n{result.stderr}")
-        return None
-
-    for candidate in build_dir.glob("**/validator"):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return candidate
-
-    print("VST3 validator binary not found after build")
-    return None
-
-
-def _validate_vst3(
-    validator: Optional[Path],
-    vst3_bundle: Path,
-    allow_crash_on_cleanup: bool = False,
-) -> None:
-    """Run the VST3 SDK validator against a bundle, if available.
-
-    When *allow_crash_on_cleanup* is True, a non-zero exit code is accepted
-    as long as no individual test reports ``[Failed]``.  The Steinberg
-    validator may SIGABRT during teardown for instrument plugins even when
-    all tests pass.
-    """
-    if validator is None:
-        return
-    result = subprocess.run(
-        [str(validator), str(vst3_bundle)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    if allow_crash_on_cleanup:
-        assert "[Failed]" not in result.stdout, (
-            f"VST3 validation failed:\n{result.stdout}\n{result.stderr}"
-        )
-    else:
-        assert result.returncode == 0, (
-            f"VST3 validation failed:\n{result.stdout}\n{result.stderr}"
-        )
 
 
 def _verify_bundle_metadata(vst3_bundle: Path, lib_name: str) -> None:
@@ -377,10 +256,10 @@ class TestVst3ProjectGeneration:
         assert (gen_dir / "gen_dsp").is_dir()
         assert (gen_dir / "gen_dsp" / "genlib.cpp").is_file()
 
-    def test_cmakelists_shared_cache_off_by_default(
+    def test_cmakelists_shared_cache_on_by_default(
         self, gigaverb_export: Path, tmp_project: Path
     ):
-        """Test that default generation has shared cache OFF."""
+        """Test that default generation has shared cache ON."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -389,22 +268,22 @@ class TestVst3ProjectGeneration:
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(OFF)" in cmake
+        assert "elseif(ON)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
-    def test_cmakelists_shared_cache_on(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that --shared-cache produces ON with resolved path."""
+    def test_cmakelists_shared_cache_off(
+        self, gigaverb_export: Path, tmp_project: Path
+    ):
+        """Test that --no-shared-cache produces OFF."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
-        config = ProjectConfig(name="testverb", platform="vst3", shared_cache=True)
+        config = ProjectConfig(name="testverb", platform="vst3", shared_cache=False)
         generator = ProjectGenerator(export_info, config)
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(ON)" in cmake
-        assert "gen-dsp" in cmake
-        assert "fetchcontent" in cmake
+        assert "elseif(OFF)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
     def test_cmakelists_post_build_commands(
@@ -753,7 +632,7 @@ class TestVst3BuildIntegration:
 
         # Validate against VST3 spec
         vst3_bundle = next(d for d in vst3_dirs if "gigaverb" in str(d))
-        _validate_vst3(vst3_validator, vst3_bundle)
+        validate_vst3(vst3_validator, vst3_bundle)
 
         # Verify post-build fixes (macOS only)
         if sys.platform == "darwin":
@@ -816,7 +695,7 @@ class TestVst3BuildIntegration:
         assert any("rampleplayer" in str(d) for d in vst3_dirs)
 
         vst3_bundle = next(d for d in vst3_dirs if "rampleplayer" in str(d))
-        _validate_vst3(vst3_validator, vst3_bundle)
+        validate_vst3(vst3_validator, vst3_bundle)
 
         # Runtime validation via minihost
         validate_minihost(vst3_bundle, 1, 2, num_params=0)
@@ -871,57 +750,12 @@ class TestVst3BuildIntegration:
         assert any("spectraldelayfb" in str(d) for d in vst3_dirs)
 
         vst3_bundle = next(d for d in vst3_dirs if "spectraldelayfb" in str(d))
-        _validate_vst3(vst3_validator, vst3_bundle)
+        validate_vst3(vst3_validator, vst3_bundle)
 
         # Runtime validation via minihost
         validate_minihost(vst3_bundle, 3, 2, num_params=0)
 
     @_skip_no_toolchain
-    def test_build_clean_rebuild(
-        self,
-        gigaverb_export: Path,
-        tmp_path: Path,
-        fetchcontent_cache: Path,
-        vst3_validator: Optional[Path],
-        monkeypatch,
-    ):
-        """Test that clean + rebuild works via the platform API."""
-        # Prevent git credential prompts in platform.build() subprocesses
-        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
-
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="vst3")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        # Inject shared FETCHCONTENT_BASE_DIR into CMakeLists.txt so
-        # platform.build() uses the cached SDK instead of re-downloading
-        cmakelists = project_dir / "CMakeLists.txt"
-        original = cmakelists.read_text()
-        inject = (
-            f'set(FETCHCONTENT_BASE_DIR "{fetchcontent_cache}" CACHE PATH "" FORCE)\n'
-        )
-        cmakelists.write_text(inject + original)
-
-        platform = Vst3Platform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert "gigaverb" in str(build_result.output_file)
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        # Validate the rebuilt bundle
-        _validate_vst3(vst3_validator, build_result.output_file)
-
     @_skip_no_toolchain
     def test_build_vst3_polyphony(
         self,
@@ -1004,7 +838,7 @@ class TestVst3BuildIntegration:
         # Validate against VST3 spec (validator may SIGABRT on teardown
         # for instrument plugins even when all individual tests pass)
         vst3_bundle = next(d for d in vst3_dirs if "polyverb" in str(d))
-        _validate_vst3(vst3_validator, vst3_bundle, allow_crash_on_cleanup=True)
+        validate_vst3(vst3_validator, vst3_bundle, allow_crash_on_cleanup=True)
 
         # Runtime validation via minihost (check_energy=False: generator with no audio input)
         validate_minihost(vst3_bundle, 0, 2, num_params=8, check_energy=False)

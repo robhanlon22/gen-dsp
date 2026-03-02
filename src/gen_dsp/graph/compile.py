@@ -1484,7 +1484,10 @@ def _emit_node_compute(
         w(f"        float {node.id} = {_float_lit(_NAMED_CONSTANT_VALUES[node.op])};")
 
     elif isinstance(node, SampleRate):
-        w(f"        float {node.id} = sr;")
+        # `sr` is already declared at perform-function scope (from self->sr),
+        # so only emit an alias when the node uses a different id.
+        if node.id != "sr":
+            w(f"        float {node.id} = sr;")
 
     elif isinstance(node, Smoothstep):
         nid = node.id

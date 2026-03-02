@@ -1,0 +1,19 @@
+{
+  "name": "noisegate",
+  "inputs": [
+    {"id": "in1"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "gated"}
+  ],
+  "params": [
+    {"name": "threshold", "min": 0.0, "max": 1.0, "default": 0.1},
+    {"name": "smoothing", "min": 0.0, "max": 0.999, "default": 0.95}
+  ],
+  "nodes": [
+    {"id": "rectified", "op": "abs", "a": "in1"},
+    {"id": "envelope", "op": "onepole", "a": "rectified", "coeff": "smoothing"},
+    {"id": "gate_open", "op": "gt", "a": "envelope", "b": "threshold"},
+    {"id": "gated", "op": "select", "cond": "gate_open", "a": 0.0, "b": "in1"}
+  ]
+}

@@ -1,0 +1,20 @@
+# Signal routing: gate (1-to-N demux) with per-path processing.
+# Routes a mono input to one of three processing paths:
+#   1. Clean pass-through
+#   2. Soft-clipped (tanh distortion)
+#   3. Lowpass filtered
+
+graph signal_router {
+    in input
+    out out1 = clean
+    out out2 = distorted
+    out out3 = filtered
+
+    param route 0..3 = 1
+
+    a, b, c = gate_route(input, route, 3)
+
+    clean     = a
+    distorted = tanh(b * 3.0)
+    filtered  = onepole(c, 0.2)
+}

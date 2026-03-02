@@ -1,0 +1,13 @@
+# Stereo gain -- simplest possible graph.
+# Two audio inputs scaled by a single gain parameter.
+
+graph stereo_gain {
+    in in1, in2
+    out out1 = scaled1
+    out out2 = scaled2
+
+    param gain 0..2 = 1.0
+
+    scaled1 = in1 * gain
+    scaled2 = in2 * gain
+}

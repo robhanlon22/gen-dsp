@@ -1,0 +1,19 @@
+# Noise gate using envelope following and threshold comparison.
+# Envelope follower smooths the rectified input; gate opens when
+# the envelope exceeds the threshold.
+
+graph noisegate {
+    in input
+    out output = gated
+
+    param threshold 0..1     = 0.1
+    param smoothing 0..0.999 = 0.95
+
+    # Envelope follower: lowpass of |input|
+    rectified = abs(input)
+    envelope  = onepole(rectified, smoothing)
+
+    # Gate: pass signal when envelope > threshold, else silence
+    gate_open = envelope > threshold
+    gated     = select(gate_open, 0.0, input)
+}

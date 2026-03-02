@@ -1,0 +1,16 @@
+{
+  "name": "slew_limiter",
+  "inputs": [
+    {"id": "in1"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "slewed"}
+  ],
+  "params": [
+    {"name": "rise", "min": 1.0, "max": 10000.0, "default": 100.0},
+    {"name": "fall", "min": 1.0, "max": 10000.0, "default": 100.0}
+  ],
+  "nodes": [
+    {"id": "slewed", "op": "slide", "a": "in1", "up": "rise", "down": "fall"}
+  ]
+}

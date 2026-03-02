@@ -1,0 +1,33 @@
+# Filtered feedback delay: delay line with a lowpass filter in the
+# feedback path and interpolated reads. Uses history for single-sample
+# feedback. Demonstrates delay_read with interp=linear and the history
+# feedback pattern.
+
+graph filtered_delay (sr=48000) {
+    in input
+    out output = wet_mix
+
+    param time     1..2000  = 500     # delay time in ms
+    param feedback 0..0.99  = 0.6
+    param tone     0..1     = 0.3     # lowpass on feedback
+    param mix      0..1     = 0.5
+
+    delay dly 96000
+
+    # Convert ms to samples
+    time_samps = mstosamps(time)
+
+    # Read from delay line with interpolation
+    tap = delay_read dly (time_samps, interp=linear)
+
+    # Filter the feedback
+    fb_filtered = onepole(tap, tone)
+
+    # Write input + filtered feedback into delay
+    delay_write dly (input + fb_filtered * feedback)
+
+    # Crossfade dry/wet
+    dry     = input * (1 - mix)
+    wet     = tap * mix
+    wet_mix = dry + wet
+}

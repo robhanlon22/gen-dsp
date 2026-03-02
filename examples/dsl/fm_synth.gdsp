@@ -1,0 +1,31 @@
+# FM synthesizer: carrier + modulator with ADSR envelope.
+# Two-operator FM using sine wavetable oscillators.
+# No audio inputs (generator/instrument).
+
+graph fm_synth (sr=44100) {
+    out output = result
+
+    param gate      0..1      = 0
+    param freq      20..2000  = 440
+    param mod_ratio 0.5..8    = 2.0
+    param mod_index 0..10     = 3.0
+    param amp       0..1      = 0.3
+
+    buffer sine_tbl 512 fill=sine
+
+    # Modulator
+    mod_freq  = freq * mod_ratio
+    mod_phase = phasor(mod_freq)
+    mod_osc   = cycle(sine_tbl, mod_phase)
+
+    # Frequency deviation
+    deviation = mod_osc * mod_index * mod_freq
+
+    # Carrier
+    car_phase = phasor(freq + deviation)
+    car_osc   = cycle(sine_tbl, car_phase)
+
+    # ADSR envelope
+    env    = adsr(gate, 10, 100, 0.7, 200)
+    result = car_osc * env * amp
+}

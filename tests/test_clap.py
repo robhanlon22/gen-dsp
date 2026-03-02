@@ -8,6 +8,8 @@ from typing import Optional
 
 import pytest
 
+from tests.helpers import validate_clap
+
 from gen_dsp.core.parser import GenExportParser
 from gen_dsp.core.project import ProjectGenerator, ProjectConfig
 from gen_dsp.platforms import (
@@ -33,86 +35,6 @@ _can_build = _has_cmake and _has_cxx
 _skip_no_toolchain = pytest.mark.skipif(
     not _can_build, reason="cmake and C++ compiler required"
 )
-
-# -- Persistent CLAP validator build directory (reused across sessions) --------
-_VALIDATOR_DIR = Path(__file__).resolve().parent.parent / "build" / ".clap_validator"
-
-
-@pytest.fixture(scope="session")
-def clap_validator() -> Optional[Path]:
-    """Build the clap-validator once per session.
-
-    The validator binary persists in build/.clap_validator/ so it is only
-    compiled on first run.  Returns None (and prints a warning) if the
-    build fails -- this lets the build integration tests still pass
-    without validation.
-    """
-    if not _can_build or not _has_cargo:
-        return None
-
-    src_dir = _VALIDATOR_DIR / "src"
-    binary = src_dir / "target" / "release" / "clap-validator"
-
-    # Check for a previously built validator
-    if binary.is_file() and os.access(binary, os.X_OK):
-        return binary
-
-    # Clone and build clap-validator
-    _VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not (src_dir / "Cargo.toml").is_file():
-        result = subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "https://github.com/free-audio/clap-validator.git",
-                str(src_dir),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            print(f"clap-validator clone failed:\n{result.stderr}")
-            return None
-
-    result = subprocess.run(
-        ["cargo", "build", "--release"],
-        cwd=src_dir,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        print(f"clap-validator build failed:\n{result.stderr}")
-        return None
-
-    if binary.is_file() and os.access(binary, os.X_OK):
-        return binary
-
-    print("clap-validator binary not found after build")
-    return None
-
-
-def _validate_clap(validator: Optional[Path], clap_bundle: Path) -> None:
-    """Run the CLAP validator against a plugin, if available."""
-    if validator is None:
-        return
-    result = subprocess.run(
-        [str(validator), "validate", str(clap_bundle)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    # Check for failures in output (validator returns 0 even with warnings)
-    assert "0 failed" in result.stdout, (
-        f"CLAP validation failed:\n{result.stdout}\n{result.stderr}"
-    )
-    assert result.returncode == 0, (
-        f"CLAP validation failed:\n{result.stdout}\n{result.stderr}"
-    )
 
 
 class TestClapPlatform:
@@ -263,10 +185,10 @@ class TestClapProjectGeneration:
         assert (gen_dir / "gen_dsp").is_dir()
         assert (gen_dir / "gen_dsp" / "genlib.cpp").is_file()
 
-    def test_cmakelists_shared_cache_off_by_default(
+    def test_cmakelists_shared_cache_on_by_default(
         self, gigaverb_export: Path, tmp_project: Path
     ):
-        """Test that default generation has shared cache OFF."""
+        """Test that default generation has shared cache ON."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -275,22 +197,22 @@ class TestClapProjectGeneration:
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(OFF)" in cmake
+        assert "elseif(ON)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
-    def test_cmakelists_shared_cache_on(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that --shared-cache produces ON with resolved path."""
+    def test_cmakelists_shared_cache_off(
+        self, gigaverb_export: Path, tmp_project: Path
+    ):
+        """Test that --no-shared-cache produces OFF."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
-        config = ProjectConfig(name="testverb", platform="clap", shared_cache=True)
+        config = ProjectConfig(name="testverb", platform="clap", shared_cache=False)
         generator = ProjectGenerator(export_info, config)
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(ON)" in cmake
-        assert "gen-dsp" in cmake
-        assert "fetchcontent" in cmake
+        assert "elseif(OFF)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
 
@@ -658,7 +580,7 @@ class TestClapBuildIntegration:
         assert clap_files[0].name == "gigaverb.clap"
 
         # Validate against CLAP spec
-        _validate_clap(clap_validator, clap_files[0])
+        validate_clap(clap_validator, clap_files[0])
 
     @_skip_no_toolchain
     def test_build_clap_with_buffers(
@@ -712,7 +634,7 @@ class TestClapBuildIntegration:
         assert len(clap_files) >= 1
         assert clap_files[0].name == "rampleplayer.clap"
 
-        _validate_clap(clap_validator, clap_files[0])
+        validate_clap(clap_validator, clap_files[0])
 
     @_skip_no_toolchain
     def test_build_clap_spectraldelayfb(
@@ -762,52 +684,9 @@ class TestClapBuildIntegration:
         assert len(clap_files) >= 1
         assert clap_files[0].name == "spectraldelayfb.clap"
 
-        _validate_clap(clap_validator, clap_files[0])
+        validate_clap(clap_validator, clap_files[0])
 
     @_skip_no_toolchain
-    def test_build_clean_rebuild(
-        self,
-        gigaverb_export: Path,
-        tmp_path: Path,
-        fetchcontent_cache: Path,
-        clap_validator: Optional[Path],
-        monkeypatch,
-    ):
-        """Test that clean + rebuild works via the platform API."""
-        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
-
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="clap")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        # Inject shared FetchContent cache
-        cmakelists = project_dir / "CMakeLists.txt"
-        original = cmakelists.read_text()
-        inject = (
-            f'set(FETCHCONTENT_BASE_DIR "{fetchcontent_cache}" CACHE PATH "" FORCE)\n'
-        )
-        cmakelists.write_text(inject + original)
-
-        platform = ClapPlatform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert build_result.output_file.name == "gigaverb.clap"
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        # Validate the rebuilt bundle
-        _validate_clap(clap_validator, build_result.output_file)
-
     @_skip_no_toolchain
     def test_build_clap_polyphony(
         self,
@@ -888,4 +767,4 @@ class TestClapBuildIntegration:
         assert clap_files[0].name == "polyverb.clap"
 
         # Validate against CLAP spec
-        _validate_clap(clap_validator, clap_files[0])
+        validate_clap(clap_validator, clap_files[0])

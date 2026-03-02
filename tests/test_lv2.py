@@ -3,12 +3,12 @@
 import os
 import shutil
 import subprocess
-import tempfile
-import textwrap
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+from tests.helpers import validate_lv2
 
 from gen_dsp.core.parser import GenExportParser
 from gen_dsp.core.project import ProjectGenerator, ProjectConfig
@@ -34,300 +34,6 @@ _can_build = _has_cmake and _has_cxx
 _skip_no_toolchain = pytest.mark.skipif(
     not _can_build, reason="cmake and C++ compiler required"
 )
-
-# -- Persistent LV2 validator (compiled from C using lilv) ---------------------
-_VALIDATOR_DIR = Path(__file__).resolve().parent.parent / "build" / ".lv2_validator"
-
-_LV2_VALIDATOR_SRC = textwrap.dedent("""\
-    /*  lv2_validate.c -- minimal LV2 plugin validator using lilv.
-     *
-     *  Instantiates the plugin, connects all ports, runs one block of audio,
-     *  and verifies non-zero output energy (for effects with audio input).
-     *
-     *  Usage: lv2_validate <lv2_path> <uri> <audio_in> <audio_out> <params>
-     */
-    #include <lilv/lilv.h>
-    #include <stdio.h>
-    #include <stdlib.h>
-
-    #define BLOCK_SIZE 512
-    #define NUM_BLOCKS 8
-    #define SAMPLE_RATE 44100.0
-
-    int main(int argc, char** argv) {
-        if (argc < 6) {
-            fprintf(stderr,
-                "Usage: %s <lv2_path> <uri> <audio_in> <audio_out> <params>\\n",
-                argv[0]);
-            return 1;
-        }
-
-        const char* lv2_path = argv[1];
-        const char* uri_str  = argv[2];
-        int exp_ain   = atoi(argv[3]);
-        int exp_aout  = atoi(argv[4]);
-        int exp_param = atoi(argv[5]);
-
-        setenv("LV2_PATH", lv2_path, 1);
-
-        LilvWorld* world = lilv_world_new();
-        lilv_world_load_all(world);
-
-        LilvNode* uri = lilv_new_uri(world, uri_str);
-        const LilvPlugin* plugin = lilv_plugins_get_by_uri(
-            lilv_world_get_all_plugins(world), uri);
-
-        if (!plugin) {
-            fprintf(stderr, "FAIL: plugin <%s> not found\\n", uri_str);
-            return 1;
-        }
-
-        LilvNode* name_node = lilv_plugin_get_name(plugin);
-        printf("Plugin: %s\\n", lilv_node_as_string(name_node));
-        lilv_node_free(name_node);
-
-        uint32_t n_ports = lilv_plugin_get_num_ports(plugin);
-        printf("Ports: %u\\n", n_ports);
-
-        /* Instantiate */
-        LilvInstance* inst = lilv_plugin_instantiate(plugin, SAMPLE_RATE, NULL);
-        if (!inst) {
-            fprintf(stderr, "FAIL: could not instantiate\\n");
-            return 1;
-        }
-        printf("Instantiated OK\\n");
-
-        /* URI nodes for port classification */
-        LilvNode* cls_audio   = lilv_new_uri(world,
-            "http://lv2plug.in/ns/lv2core#AudioPort");
-        LilvNode* cls_control = lilv_new_uri(world,
-            "http://lv2plug.in/ns/lv2core#ControlPort");
-        LilvNode* cls_input   = lilv_new_uri(world,
-            "http://lv2plug.in/ns/lv2core#InputPort");
-
-        /* Per-port storage */
-        float** bufs = (float**)calloc(n_ports, sizeof(float*));
-        float*  ctrl = (float*) calloc(n_ports, sizeof(float));
-        int ain = 0, aout = 0, cin = 0;
-
-        for (uint32_t p = 0; p < n_ports; p++) {
-            const LilvPort* port = lilv_plugin_get_port_by_index(plugin, p);
-            int is_in = lilv_port_is_a(plugin, port, cls_input);
-
-            if (lilv_port_is_a(plugin, port, cls_audio)) {
-                bufs[p] = (float*)calloc(BLOCK_SIZE, sizeof(float));
-                if (is_in) {
-                    for (int j = 0; j < BLOCK_SIZE; j++)
-                        bufs[p][j] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
-                    ain++;
-                } else {
-                    aout++;
-                }
-                lilv_instance_connect_port(inst, p, bufs[p]);
-            } else if (lilv_port_is_a(plugin, port, cls_control)) {
-                LilvNode* defval = NULL;
-                lilv_port_get_range(plugin, port, &defval, NULL, NULL);
-                if (defval) {
-                    ctrl[p] = lilv_node_as_float(defval);
-                    lilv_node_free(defval);
-                }
-                lilv_instance_connect_port(inst, p, &ctrl[p]);
-                if (is_in) cin++;
-            }
-        }
-
-        printf("Audio: %d in, %d out; Control: %d in\\n", ain, aout, cin);
-
-        int fail = 0;
-        if (ain != exp_ain) {
-            fprintf(stderr, "FAIL: audio_in %d != expected %d\\n", ain, exp_ain);
-            fail = 1;
-        }
-        if (aout != exp_aout) {
-            fprintf(stderr, "FAIL: audio_out %d != expected %d\\n", aout, exp_aout);
-            fail = 1;
-        }
-        if (cin != exp_param) {
-            fprintf(stderr, "FAIL: params %d != expected %d\\n", cin, exp_param);
-            fail = 1;
-        }
-
-        if (!fail) {
-            lilv_instance_activate(inst);
-
-            /* Run multiple blocks to account for FFT latency in spectral
-               processors.  Refill audio inputs with fresh noise each block
-               and accumulate output energy across all blocks. */
-            double energy = 0.0;
-            for (int blk = 0; blk < NUM_BLOCKS; blk++) {
-                /* Refill input buffers */
-                for (uint32_t p = 0; p < n_ports; p++) {
-                    const LilvPort* port =
-                        lilv_plugin_get_port_by_index(plugin, p);
-                    if (lilv_port_is_a(plugin, port, cls_audio) &&
-                        lilv_port_is_a(plugin, port, cls_input)) {
-                        for (int j = 0; j < BLOCK_SIZE; j++)
-                            bufs[p][j] =
-                                ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
-                    }
-                }
-
-                lilv_instance_run(inst, BLOCK_SIZE);
-
-                /* Accumulate output energy */
-                for (uint32_t p = 0; p < n_ports; p++) {
-                    const LilvPort* port =
-                        lilv_plugin_get_port_by_index(plugin, p);
-                    if (lilv_port_is_a(plugin, port, cls_audio) &&
-                        !lilv_port_is_a(plugin, port, cls_input)) {
-                        for (int j = 0; j < BLOCK_SIZE; j++)
-                            energy += (double)(bufs[p][j] * bufs[p][j]);
-                    }
-                }
-            }
-            printf("Output energy: %.6f (%d blocks)\\n", energy, NUM_BLOCKS);
-
-            if (ain > 0 && energy == 0.0) {
-                fprintf(stderr, "FAIL: zero output energy\\n");
-                fail = 1;
-            }
-
-            lilv_instance_deactivate(inst);
-        }
-
-        /* Cleanup */
-        lilv_instance_free(inst);
-        for (uint32_t p = 0; p < n_ports; p++)
-            free(bufs[p]);
-        free(bufs);
-        free(ctrl);
-        lilv_node_free(cls_audio);
-        lilv_node_free(cls_control);
-        lilv_node_free(cls_input);
-        lilv_node_free(uri);
-        lilv_world_free(world);
-
-        printf(fail ? "FAILED\\n" : "PASS\\n");
-        return fail;
-    }
-""")
-
-
-def _check_pkg_config_lilv() -> bool:
-    """Return True if pkg-config can resolve lilv-0."""
-    try:
-        result = subprocess.run(
-            ["pkg-config", "--exists", "lilv-0"],
-            capture_output=True,
-            timeout=10,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-_has_pkg_config_lilv = _check_pkg_config_lilv()
-
-
-@pytest.fixture(scope="session")
-def lv2_validator() -> Optional[Path]:
-    """Compile a minimal LV2 validator from C once per session.
-
-    Uses pkg-config for lilv-0 flags.  The binary is cached in
-    build/.lv2_validator/ and reused across pytest sessions.
-    Returns None if lilv-0 is not available or compilation fails.
-    """
-    if not _has_pkg_config_lilv:
-        return None
-
-    _VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
-    binary = _VALIDATOR_DIR / "lv2_validate"
-
-    # Reuse previously compiled binary
-    if binary.is_file() and os.access(binary, os.X_OK):
-        return binary
-
-    # Write C source
-    src = _VALIDATOR_DIR / "lv2_validate.c"
-    src.write_text(_LV2_VALIDATOR_SRC)
-
-    # Get compiler flags from pkg-config
-    try:
-        cflags = subprocess.run(
-            ["pkg-config", "--cflags", "lilv-0"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-        libs = subprocess.run(
-            ["pkg-config", "--libs", "lilv-0"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-
-    # Compile
-    cc = "cc"
-    cmd = f"{cc} {cflags} {str(src)} {libs} -lm -o {str(binary)}"
-    result = subprocess.run(
-        cmd,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        cwd=_VALIDATOR_DIR,
-    )
-    if result.returncode != 0:
-        print(f"LV2 validator compile failed:\n{result.stderr}")
-        return None
-
-    return binary
-
-
-def _validate_lv2(
-    validator: Optional[Path],
-    bundle_dir: Path,
-    lib_name: str,
-    expected_audio_in: int,
-    expected_audio_out: int,
-    expected_params: int,
-) -> None:
-    """Validate a built LV2 bundle by instantiating and processing audio.
-
-    Uses a custom C validator that loads the plugin via lilv, connects
-    all ports, runs one block of audio, and checks output energy.
-    Copies the bundle to an isolated directory so lilv doesn't scan
-    stray build artifacts.
-    """
-    if validator is None:
-        return
-
-    plugin_uri = f"http://gen-dsp.com/plugins/{lib_name}"
-
-    # Copy bundle to a clean directory to avoid lilv scanning noise
-    with tempfile.TemporaryDirectory() as tmpdir:
-        isolated = Path(tmpdir) / bundle_dir.name
-        shutil.copytree(bundle_dir, isolated)
-
-        result = subprocess.run(
-            [
-                str(validator),
-                tmpdir,
-                plugin_uri,
-                str(expected_audio_in),
-                str(expected_audio_out),
-                str(expected_params),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert result.returncode == 0, (
-            f"LV2 validation failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-        assert "PASS" in result.stdout
 
 
 class TestLv2Platform:
@@ -574,10 +280,10 @@ class TestLv2ProjectGeneration:
         assert "lv2:AudioPort" in ttl
         assert "lv2:ControlPort" not in ttl
 
-    def test_cmakelists_shared_cache_off_by_default(
+    def test_cmakelists_shared_cache_on_by_default(
         self, gigaverb_export: Path, tmp_project: Path
     ):
-        """Test that default generation has shared cache OFF."""
+        """Test that default generation has shared cache ON."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -586,22 +292,22 @@ class TestLv2ProjectGeneration:
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(OFF)" in cmake
+        assert "elseif(ON)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
-    def test_cmakelists_shared_cache_on(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that --shared-cache produces ON with resolved path."""
+    def test_cmakelists_shared_cache_off(
+        self, gigaverb_export: Path, tmp_project: Path
+    ):
+        """Test that --no-shared-cache produces OFF."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
-        config = ProjectConfig(name="testverb", platform="lv2", shared_cache=True)
+        config = ProjectConfig(name="testverb", platform="lv2", shared_cache=False)
         generator = ProjectGenerator(export_info, config)
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(ON)" in cmake
-        assert "gen-dsp" in cmake
-        assert "fetchcontent" in cmake
+        assert "elseif(OFF)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
 
@@ -670,7 +376,7 @@ class TestLv2BuildIntegration:
         binaries = list(bundle.glob("gigaverb.*"))
         assert len(binaries) >= 1
 
-        _validate_lv2(lv2_validator, bundle, "gigaverb", 2, 2, 8)
+        validate_lv2(lv2_validator, bundle, "gigaverb", 2, 2, 8)
 
         # Runtime validation via minihost
         validate_minihost(bundle, 2, 2, num_params=8)
@@ -728,7 +434,7 @@ class TestLv2BuildIntegration:
         assert len(lv2_bundles) >= 1
         assert lv2_bundles[0].name == "rampleplayer.lv2"
 
-        _validate_lv2(lv2_validator, lv2_bundles[0], "rampleplayer", 1, 2, 0)
+        validate_lv2(lv2_validator, lv2_bundles[0], "rampleplayer", 1, 2, 0)
 
         # Runtime validation via minihost
         validate_minihost(lv2_bundles[0], 1, 2, num_params=0)
@@ -782,54 +488,12 @@ class TestLv2BuildIntegration:
         assert len(lv2_bundles) >= 1
         assert lv2_bundles[0].name == "spectraldelayfb.lv2"
 
-        _validate_lv2(lv2_validator, lv2_bundles[0], "spectraldelayfb", 3, 2, 0)
+        validate_lv2(lv2_validator, lv2_bundles[0], "spectraldelayfb", 3, 2, 0)
 
         # Runtime validation via minihost
         validate_minihost(lv2_bundles[0], 3, 2, num_params=0)
 
     @_skip_no_toolchain
-    def test_build_clean_rebuild(
-        self,
-        gigaverb_export: Path,
-        tmp_path: Path,
-        fetchcontent_cache: Path,
-        lv2_validator: Optional[Path],
-        monkeypatch,
-    ):
-        """Test that clean + rebuild works via the platform API."""
-        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
-
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="lv2")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        # Inject shared FetchContent cache
-        cmakelists = project_dir / "CMakeLists.txt"
-        original = cmakelists.read_text()
-        inject = (
-            f'set(FETCHCONTENT_BASE_DIR "{fetchcontent_cache}" CACHE PATH "" FORCE)\n'
-        )
-        cmakelists.write_text(inject + original)
-
-        platform = Lv2Platform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert build_result.output_file.name == "gigaverb.lv2"
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        _validate_lv2(lv2_validator, build_result.output_file, "gigaverb", 2, 2, 8)
-
     @_skip_no_toolchain
     def test_build_lv2_polyphony(
         self,
@@ -931,7 +595,7 @@ class TestLv2BuildIntegration:
         # The C validator checks audio port counts; for a poly generator the
         # expected audio_in is 0.  The atom MIDI port is not an audio port so
         # lilv won't count it.  gigaverb has 8 params.
-        _validate_lv2(lv2_validator, bundle, "polyverb", 0, 2, 8)
+        validate_lv2(lv2_validator, bundle, "polyverb", 0, 2, 8)
 
         # Runtime validation via minihost (check_energy=False: generator with no audio input)
         validate_minihost(bundle, 0, 2, num_params=8, check_energy=False)

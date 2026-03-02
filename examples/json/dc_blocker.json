@@ -1,0 +1,13 @@
+{
+  "name": "dc_blocker",
+  "inputs": [
+    {"id": "in1"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "clean"}
+  ],
+  "params": [],
+  "nodes": [
+    {"id": "clean", "op": "dcblock", "a": "in1"}
+  ]
+}

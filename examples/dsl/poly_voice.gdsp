@@ -1,0 +1,29 @@
+# Polyphonic subgraph reuse: a reusable voice graph instantiated
+# twice with different parameters in a poly_synth wrapper.
+# Demonstrates multi-graph files and subgraph calls.
+
+graph voice {
+    in gate_in
+    out output = out_signal
+
+    param freq    20..20000 = 440
+    param attack  1..5000   = 10
+    param release 1..5000   = 200
+
+    env        = adsr(gate_in, attack, 50, 0.8, release)
+    osc        = sawosc(freq)
+    out_signal = osc * env
+}
+
+graph poly_synth {
+    out output = mixed
+
+    param freq1 20..20000 = 440
+    param freq2 20..20000 = 550
+    param gate  0..1      = 0
+
+    v1 = voice(gate_in=gate, freq=freq1)
+    v2 = voice(gate_in=gate, freq=freq2)
+
+    mixed = (v1 + v2) * 0.5
+}

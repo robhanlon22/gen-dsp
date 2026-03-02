@@ -2,7 +2,7 @@
 
 gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting PureData, Max/MSP, ChucK, AudioUnit (AUv2), CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, and Circle. It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
 
-gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python or JSON and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
+gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python, JSON, or the purpose-built **GDSP DSL** (`.gdsp` files) and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
 
 This project is a friendly fork of Michael Spears' [gen_ext](https://github.com/samesimilar/gen_ext) which was originally created to "compile code exported from a Max gen~ object into an "external" object that can be loaded into a PureData patch."
 
@@ -44,7 +44,7 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 
 - **Python package**: gen-dsp is a pip installable zero-dependency python package with a cli which embeds all templates and related code.
 
-- **Automated project scaffolding**: `gen-dsp init` creates a complete, buildable project from a gen~ export in one command, versus manually copying files and editing Makefiles.
+- **Automated project scaffolding**: `gen-dsp <source> -p <platform>` creates a complete, buildable project from a gen~ export or graph file in one command, versus manually copying files and editing Makefiles.
 
 - **Automatic buffer detection**: Scans exported code for buffer usage patterns and configures them without manual intervention.
 
@@ -76,7 +76,7 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 
 - **Platform registry**: To make it easy to discover new backends
 
-- **graph frontend** (optional): Define DSP signal-processing graphs in Python or JSON using 54 built-in node types (oscillators, filters, delays, buffers, math ops, etc.), then compile to C++ and generate buildable plugin projects. Primary purpose is to enable testing gen-dsp's platform backends without gen~ exports. Includes graph validation, optimization (dead-code elimination, constant folding), FAUST-style algebra combinators (`series`, `parallel`, `split`, `merge`), Graphviz visualization, and numpy-based simulation. Covers ~89% of gen~ operators.
+- **graph frontend** (optional): Define DSP signal-processing graphs in the [GDSP DSL](docs/graph/dsl.md), Python, or JSON using 54 built-in node types (oscillators, filters, delays, buffers, math ops, etc.), then compile to C++ and generate buildable plugin projects. Primary purpose is to enable testing gen-dsp's platform backends without gen~ exports. Includes graph validation, optimization (dead-code elimination, constant folding), FAUST-style algebra combinators (`series`, `parallel`, `split`, `merge`), Graphviz visualization, and numpy-based simulation. Covers ~89% of gen~ operators.
 
 ## Installation
 
@@ -110,37 +110,36 @@ pip install -e ".[graph]" # with graph frontend
 ```bash
 # 1. Export your gen~ code in Max (send 'exportcode' to gen~ object)
 
-# 2. Create a project from the export
-gen-dsp init ./path/to/export -n myeffect -o ./myeffect
+# 2. Create and build a PureData external
+gen-dsp ./path/to/export -p pd
 
-# 3. Build the external
-cd myeffect
-make all
-
-# 4. Use in PureData as myeffect~
+# 3. Use in PureData as myeffect~
 ```
 
 ## Commands
 
-### init
+### Default command
 
-Create a new project from a gen~ export:
+Generate a plugin project (and build it) from a source:
 
 ```bash
-gen-dsp init <export-path> -n <name> [-p <platform>] [-o <output>]
+gen-dsp <source> -p <platform> [-n <name>] [-o <output>] [--no-build]
 ```
+
+The source type is auto-detected:
+- **Directory** -- treated as a gen~ export
+- **`.gdsp` file** -- parsed as GDSP DSL (requires `gen-dsp[graph]`)
+- **`.json` file** -- parsed as graph JSON (requires `gen-dsp[graph]`)
 
 Options:
 
-- `-n, --name` - Name for the external (required)
-- `-p, --platform` - Target platform: `pd` (default), `max`, `chuck`, `au`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`, or `both`
-- `-o, --output` - Output directory (default: `./<name>`)
+- `-p, --platform` - Target platform (required): `pd`, `max`, `chuck`, `au`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`
+- `-n, --name` - Name for the plugin (default: inferred from source)
+- `-o, --output` - Output directory (default: `./<name>_<platform>`)
+- `--no-build` - Skip building after project creation
 - `--buffers` - Explicit buffer names (overrides auto-detection)
 - `--shared-cache` - Use a shared OS cache for FetchContent downloads (clap, vst3, lv2, sc only)
 - `--board` - Board variant for embedded platforms (Daisy: `seed`, `pod`, etc.; Circle: `pi3-i2s`, `pi4-usb`, etc.)
-- `--from-graph` - Create project from a graph JSON file instead of a gen~ export (requires `gen-dsp[graph]`)
-- `--graph` - JSON graph file for multi-plugin chain mode (Circle only; see [Chain Mode](#circle-chain-mode) below)
-- `--export` - Additional export path for chain node resolution (repeatable; use with `--graph`)
 - `--no-patch` - Skip automatic exp2f fix
 - `--dry-run` - Preview without creating files
 
@@ -160,7 +159,7 @@ Emit a JSON manifest describing a gen~ export (I/O counts, parameters with range
 gen-dsp manifest <export-path> [--buffers sample envelope]
 ```
 
-The same manifest is also written as `manifest.json` to the project root during `gen-dsp init`.
+The same manifest is also written as `manifest.json` to the project root during project generation.
 
 ### detect
 
@@ -182,20 +181,68 @@ gen-dsp patch <target-path> [--dry-run]
 
 Currently applies the `exp2f -> exp2` fix for macOS compatibility with Max 9 exports.
 
-### graph (requires `gen-dsp[graph]`)
+### Graph subcommands (requires `gen-dsp[graph]`)
 
-Work with DSP signal graphs defined as JSON:
+Work with DSP signal graphs defined as `.gdsp` or JSON:
 
 ```bash
-gen-dsp graph compile <file> [-o DIR] [--optimize] [--gen-dsp PLATFORM]
-gen-dsp graph validate <file>
-gen-dsp graph dot <file> [-o DIR]
-gen-dsp graph simulate <file> [-i INPUT] [-o DIR] [-n SAMPLES] [--param K=V]
+gen-dsp compile <file> [-o DIR] [--optimize]
+gen-dsp validate <file>
+gen-dsp dot <file> [-o DIR]
+gen-dsp sim <file> [-i INPUT] [-o DIR] [-n SAMPLES] [--param K=V]
 ```
 
-## Graph Frontend: Define DSP Graphs in Python/JSON
+All subcommands accept both `.gdsp` and `.json` files (auto-detected by extension).
 
-The optional graph subpackage (`pip install gen-dsp[graph]`) provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python or JSON and compiles them to C++, generating buildable plugin projects through the same platform backends. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
+To generate a platform project from a graph, use the default command: `gen-dsp my.gdsp -p clap`.
+
+## Graph Frontend: Define DSP Graphs in GDSP/Python/JSON
+
+The optional graph subpackage (`pip install gen-dsp[graph]`) provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in the GDSP DSL, Python, or JSON and compiles them to C++, generating buildable plugin projects through the same platform backends. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
+
+### Quick Start (GDSP)
+
+The GDSP DSL is a concise, line-oriented language for defining DSP graphs. It borrows idioms from Gen~ codebox, Faust, and SuperCollider. See the [full specification](docs/graph/dsl.md) for details.
+
+```gdsp
+graph fbdelay (sr=48000) {
+    in input
+    out output = wet_mix
+
+    param time     1..2000  = 500    # delay time in ms
+    param feedback 0..0.99  = 0.6
+    param tone     0..1     = 0.3    # lowpass on feedback
+    param mix      0..1     = 0.5
+
+    delay dly 96000
+    history fb_state = 0.0
+
+    time_samps  = mstosamps(time)
+    tap         = delay_read dly(time_samps, interp=linear)
+    fb_filtered = onepole(tap, tone)
+    delay_write dly(input + fb_filtered * feedback)
+
+    dry     = input * (1 - mix)
+    wet     = tap * mix
+    wet_mix = dry + wet
+}
+```
+
+Generate a plugin project directly from `.gdsp`:
+
+```bash
+gen-dsp fbdelay.gdsp -p clap
+```
+
+Or compile, validate, and visualize:
+
+```bash
+gen-dsp compile fbdelay.gdsp              # emit C++ to stdout
+gen-dsp validate fbdelay.gdsp             # check graph connectivity
+gen-dsp dot fbdelay.gdsp -o ./output/     # Graphviz DOT visualization
+```
+
+More examples in [`examples/dsl/`](examples/dsl/).
 
 ### Quick Start (JSON)
 
@@ -214,8 +261,7 @@ Define a graph as JSON:
 Then generate a plugin project:
 
 ```bash
-gen-dsp init --from-graph gain.json -n gain -p clap -o ./gain_clap
-cd gain_clap && cmake -B build && cmake --build build
+gen-dsp gain.json -p clap
 ```
 
 ### Quick Start (Python)
@@ -257,7 +303,7 @@ stack = lowpass // highpass    # parallel (// operator)
 Run graphs in Python with numpy (requires `pip install gen-dsp[sim]`):
 
 ```bash
-gen-dsp graph simulate lowpass.json -i in1=input.wav -o ./output/ --param cutoff=0.8
+gen-dsp sim lowpass.json -i in1=input.wav -o ./output/ --param cutoff=0.8
 ```
 
 ### Available Node Types
@@ -295,7 +341,7 @@ gen-dsp patch ./my_project            # Apply
 See the [PureData guide](docs/backends/puredata.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p pd -o ./myeffect_pd
+gen-dsp ./my_export -p pd --no-build
 cd myeffect_pd && make all
 ```
 
@@ -306,8 +352,7 @@ Parameters: send `<name> <value>` messages to the first inlet. Send `bang` to li
 See the [Max/MSP guide](docs/backends/max.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p max -o ./myeffect_max
-gen-dsp build ./myeffect_max -p max
+gen-dsp ./my_export -p max
 # Output: externals/myeffect~.mxo (macOS) or myeffect~.mxe64 (Windows)
 ```
 
@@ -318,8 +363,8 @@ Max is the only platform using 64-bit double signals. The SDK (max-sdk-base) is 
 See the [ChucK guide](docs/backends/chuck.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p chuck -o ./myeffect_chuck
-cd myeffect_chuck && make mac  # or make linux
+gen-dsp ./my_export -p chuck --no-build
+cd my_export_chuck && make mac  # or make linux
 ```
 
 Class names are auto-capitalized (`myeffect` -> `Myeffect`). Parameters are controlled via `eff.param("name", value)`. Buffer-based chugins can load WAV files at runtime via `eff.loadBuffer("sample", "amen.wav")`.
@@ -329,8 +374,7 @@ Class names are auto-capitalized (`myeffect` -> `Myeffect`). Parameters are cont
 See the [AudioUnit guide](docs/backends/audiounit.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p au -o ./myeffect_au
-cd myeffect_au && cmake -B build && cmake --build build
+gen-dsp ./my_export -p au
 # Output: build/myeffect.component
 ```
 
@@ -341,8 +385,7 @@ macOS only. Uses the raw AUv2 C API -- no external SDK needed, just system frame
 See the [CLAP guide](docs/backends/clap.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p clap -o ./myeffect_clap
-cd myeffect_clap && cmake -B build && cmake --build build
+gen-dsp ./my_export -p clap
 # Output: build/myeffect.clap
 ```
 
@@ -353,8 +396,7 @@ Cross-platform (macOS, Linux, Windows). Zero-copy audio. Passes [clap-validator]
 See the [VST3 guide](docs/backends/vst3.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p vst3 -o ./myeffect_vst3
-cd myeffect_vst3 && cmake -B build && cmake --build build
+gen-dsp ./my_export -p vst3
 # Output: build/VST3/Release/myeffect.vst3/
 ```
 
@@ -365,8 +407,7 @@ Cross-platform (macOS, Linux, Windows). Zero-copy audio. Passes Steinberg's SDK 
 See the [LV2 guide](docs/backends/lv2.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p lv2 -o ./myeffect_lv2
-cd myeffect_lv2 && cmake -B build && cmake --build build
+gen-dsp ./my_export -p lv2
 # Output: build/myeffect.lv2/
 ```
 
@@ -377,8 +418,7 @@ macOS and Linux. Passes lilv-based instantiation and audio processing validation
 See the [SuperCollider guide](docs/backends/supercollider.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p sc -o ./myeffect_sc
-cd myeffect_sc && cmake -B build && cmake --build build
+gen-dsp ./my_export -p sc
 # Output: build/myeffect.scx (macOS) or build/myeffect.so (Linux)
 ```
 
@@ -389,8 +429,7 @@ Cross-platform (macOS, Linux, Windows). Passes sclang class compilation and scsy
 See the [VCV Rack guide](docs/backends/vcvrack.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p vcvrack -o ./myeffect_vcvrack
-cd myeffect_vcvrack && make  # Rack SDK auto-downloaded
+gen-dsp ./my_export -p vcvrack
 # Output: plugin.dylib (macOS), plugin.so (Linux), or plugin.dll (Windows)
 ```
 
@@ -401,8 +440,7 @@ Per-sample processing via `perform(n=1)`. Auto-generates `plugin.json` manifest 
 See the [Daisy guide](docs/backends/daisy.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p daisy -o ./myeffect_daisy
-gen-dsp build ./myeffect_daisy -p daisy
+gen-dsp ./my_export -p daisy
 # Output: build/myeffect.bin
 ```
 
@@ -413,8 +451,7 @@ Cross-compilation target for STM32H750. Requires `arm-none-eabi-gcc`. libDaisy (
 See the [Circle guide](docs/backends/circle.md) for full details.
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p circle --board pi3-i2s -o ./myeffect_circle
-gen-dsp build ./myeffect_circle -p circle
+gen-dsp ./my_export -p circle --board pi3-i2s
 # Output: kernel8.img (copy to SD card boot partition)
 ```
 
@@ -429,11 +466,10 @@ Bare-metal kernel images for Raspberry Pi using the [Circle](https://github.com/
 
 ### Circle Multi-Plugin Mode
 
-Multi-plugin mode lets you run multiple gen~ plugins on a single Circle kernel image, with USB MIDI CC parameter control at runtime. Provide a JSON graph file via `--graph`:
+Multi-plugin mode lets you run multiple gen~ plugins on a single Circle kernel image, with USB MIDI CC parameter control at runtime. Use the `chain` subcommand with a JSON graph file:
 
 ```bash
-gen-dsp init ./exports -n mychain -p circle --graph chain.json --board pi4-i2s -o ./mychain
-cd mychain && make
+gen-dsp chain ./exports --graph chain.json -n mychain --board pi4-i2s
 # Output: kernel8-rpi4.img
 ```
 
@@ -494,10 +530,10 @@ CLAP, VST3, LV2, and SC backends use CMake FetchContent to download their SDKs/h
 
 ### `--shared-cache` flag
 
-Pass `--shared-cache` to `gen-dsp init` to bake an OS-appropriate cache path into the generated CMakeLists.txt:
+Pass `--shared-cache` to bake an OS-appropriate cache path into the generated CMakeLists.txt:
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p vst3 --shared-cache
+gen-dsp ./my_export -p vst3 --shared-cache
 ```
 
 This resolves to:
@@ -533,7 +569,7 @@ The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` a
 - VCV Rack: first build requires network access to fetch Rack SDK (cached afterward); `RACK_DIR` env var can override auto-download; per-sample `perform(n=1)` has higher CPU overhead than block-based processing
 - Daisy: requires `arm-none-eabi-gcc` cross-compiler; first clone of libDaisy requires network access and `git`; v1 targets Daisy Seed only (no board-specific knob/CV mapping)
 - Circle: requires `aarch64-none-elf-gcc` (or `arm-none-eabi-gcc` for Pi Zero) cross-compiler; first clone of Circle SDK requires network access and `git`; output-only (no audio input capture); single-plugin mode requires manual GPIO/ADC code for parameter control; multi-plugin mode (`--graph`) supports linear chains and arbitrary DAGs (fan-out, fan-in via mixer nodes) but no buffers
-- Graph frontend: requires pydantic >= 2.0; simulation additionally requires numpy >= 1.24; Daisy, Circle, and VCV Rack platforms not yet supported via `--from-graph`
+- Graph frontend: requires pydantic >= 2.0; simulation additionally requires numpy >= 1.24; Daisy, Circle, and VCV Rack platforms not yet supported for graph sources
 
 ## Requirements
 

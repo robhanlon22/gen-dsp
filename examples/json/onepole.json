@@ -1,0 +1,19 @@
+{
+  "name": "onepole",
+  "inputs": [
+    {"id": "in1"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "result"}
+  ],
+  "params": [
+    {"name": "coeff", "min": 0.0, "max": 0.999, "default": 0.5}
+  ],
+  "nodes": [
+    {"id": "inv_coeff", "op": "sub", "a": 1.0, "b": "coeff"},
+    {"id": "dry", "op": "mul", "a": "in1", "b": "inv_coeff"},
+    {"id": "prev", "op": "history", "init": 0.0, "input": "result"},
+    {"id": "wet", "op": "mul", "a": "prev", "b": "coeff"},
+    {"id": "result", "op": "add", "a": "dry", "b": "wet"}
+  ]
+}

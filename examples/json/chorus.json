@@ -1,0 +1,29 @@
+{
+  "name": "chorus",
+  "inputs": [
+    {"id": "in1"}
+  ],
+  "outputs": [
+    {"id": "out1", "source": "mix_out"}
+  ],
+  "params": [
+    {"name": "rate", "min": 0.1, "max": 5.0, "default": 1.5},
+    {"name": "depth", "min": 0.0, "max": 1.0, "default": 0.5},
+    {"name": "mix", "min": 0.0, "max": 1.0, "default": 0.5}
+  ],
+  "nodes": [
+    {"id": "lfo", "op": "sinosc", "freq": "rate"},
+    {"id": "depth_samp", "op": "mul", "a": "depth", "b": 220.0},
+    {"id": "mod", "op": "mul", "a": "lfo", "b": "depth_samp"},
+    {"id": "tap", "op": "add", "a": 441.0, "b": "mod"},
+
+    {"id": "dline", "op": "delay", "max_samples": 2048},
+    {"id": "dwrite", "op": "delay_write", "delay": "dline", "value": "in1"},
+    {"id": "delayed", "op": "delay_read", "delay": "dline", "tap": "tap"},
+
+    {"id": "inv_mix", "op": "sub", "a": 1.0, "b": "mix"},
+    {"id": "dry", "op": "mul", "a": "in1", "b": "inv_mix"},
+    {"id": "wet", "op": "mul", "a": "delayed", "b": "mix"},
+    {"id": "mix_out", "op": "add", "a": "dry", "b": "wet"}
+  ]
+}

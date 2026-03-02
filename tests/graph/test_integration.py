@@ -109,8 +109,6 @@ class TestFromGraphCLI:
         result = subprocess.run(
             [
                 "gen-dsp",
-                "init",
-                "--from-graph",
                 str(graph_file),
                 "-n",
                 "cli_test",
@@ -118,6 +116,7 @@ class TestFromGraphCLI:
                 "clap",
                 "-o",
                 str(out_dir),
+                "--no-build",
             ],
             capture_output=True,
             text=True,

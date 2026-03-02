@@ -1,7 +1,11 @@
 """Pytest configuration and fixtures for gen_dsp tests."""
 
+import os
 import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -121,3 +125,399 @@ def fetchcontent_cache() -> Path:
         if d.is_dir() and (d.name.endswith("-build") or d.name.endswith("-subbuild")):
             shutil.rmtree(d, ignore_errors=True)
     return _FETCHCONTENT_CACHE
+
+
+# -- Shared build environment helper ------------------------------------------
+
+
+def _build_env() -> dict[str, str]:
+    """Environment for cmake subprocesses that prevents git credential prompts."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return env
+
+
+# -- CLAP validator fixture ----------------------------------------------------
+
+_CLAP_VALIDATOR_DIR = _FETCHCONTENT_CACHE.parent / ".clap_validator"
+_has_cargo = shutil.which("cargo") is not None
+
+
+@pytest.fixture(scope="session")
+def clap_validator() -> Optional[Path]:
+    """Build the clap-validator once per session.
+
+    The validator binary persists in build/.clap_validator/ so it is only
+    compiled on first run.  Returns None if cargo is unavailable or the
+    build fails.
+    """
+    if not _has_cargo:
+        return None
+
+    src_dir = _CLAP_VALIDATOR_DIR / "src"
+    binary = src_dir / "target" / "release" / "clap-validator"
+
+    if binary.is_file() and os.access(binary, os.X_OK):
+        return binary
+
+    _CLAP_VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not (src_dir / "Cargo.toml").is_file():
+        result = subprocess.run(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "https://github.com/free-audio/clap-validator.git",
+                str(src_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"clap-validator clone failed:\n{result.stderr}")
+            return None
+
+    result = subprocess.run(
+        ["cargo", "build", "--release"],
+        cwd=src_dir,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        print(f"clap-validator build failed:\n{result.stderr}")
+        return None
+
+    if binary.is_file() and os.access(binary, os.X_OK):
+        return binary
+
+    print("clap-validator binary not found after build")
+    return None
+
+
+# -- VST3 validator fixture ----------------------------------------------------
+
+_VST3_VALIDATOR_DIR = _FETCHCONTENT_CACHE.parent / ".vst3_validator"
+
+_VST3_VALIDATOR_CMAKE = textwrap.dedent("""\
+    cmake_minimum_required(VERSION 3.15)
+    project(vst3_validator_build)
+
+    include(FetchContent)
+    FetchContent_Declare(
+        vst3sdk
+        GIT_REPOSITORY https://github.com/steinbergmedia/vst3sdk.git
+        GIT_TAG v3.7.9_build_61
+        GIT_SHALLOW ON
+    )
+
+    set(SMTG_ENABLE_VST3_HOSTING_EXAMPLES ON CACHE BOOL "" FORCE)
+    set(SMTG_ENABLE_VST3_PLUGIN_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(SMTG_ENABLE_VSTGUI_SUPPORT OFF CACHE BOOL "" FORCE)
+    set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(vst3sdk)
+""")
+
+
+@pytest.fixture(scope="session")
+def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
+    """Build the VST3 SDK validator once per session.
+
+    Returns None if cmake is unavailable or the build fails.
+    """
+    if not shutil.which("cmake"):
+        return None
+
+    _VST3_VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
+    build_dir = _VST3_VALIDATOR_DIR / "build"
+    build_dir.mkdir(exist_ok=True)
+
+    for candidate in build_dir.glob("**/validator"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+
+    cmakelists = _VST3_VALIDATOR_DIR / "CMakeLists.txt"
+    cmakelists.write_text(_VST3_VALIDATOR_CMAKE)
+
+    env = _build_env()
+
+    cmake_configure = ["cmake", "..", "-DCMAKE_BUILD_TYPE=Release"]
+    sdk_src = fetchcontent_cache / "vst3sdk-src"
+    if sdk_src.is_dir():
+        cmake_configure.append(f"-DFETCHCONTENT_SOURCE_DIR_VST3SDK={sdk_src}")
+
+    result = subprocess.run(
+        cmake_configure,
+        cwd=build_dir,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=env,
+    )
+    if result.returncode != 0:
+        print(f"VST3 validator cmake configure failed:\n{result.stderr}")
+        return None
+
+    result = subprocess.run(
+        ["cmake", "--build", ".", "--target", "validator"],
+        cwd=build_dir,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=env,
+    )
+    if result.returncode != 0:
+        print(f"VST3 validator build failed:\n{result.stderr}")
+        return None
+
+    for candidate in build_dir.glob("**/validator"):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+
+    print("VST3 validator binary not found after build")
+    return None
+
+
+# -- LV2 validator fixture ----------------------------------------------------
+
+_LV2_VALIDATOR_DIR = _FETCHCONTENT_CACHE.parent / ".lv2_validator"
+
+_LV2_VALIDATOR_SRC = textwrap.dedent("""\
+    /*  lv2_validate.c -- minimal LV2 plugin validator using lilv.
+     *
+     *  Instantiates the plugin, connects all ports, runs one block of audio,
+     *  and verifies non-zero output energy (for effects with audio input).
+     *
+     *  Usage: lv2_validate <lv2_path> <uri> <audio_in> <audio_out> <params>
+     */
+    #include <lilv/lilv.h>
+    #include <stdio.h>
+    #include <stdlib.h>
+
+    #define BLOCK_SIZE 512
+    #define NUM_BLOCKS 8
+    #define SAMPLE_RATE 44100.0
+
+    int main(int argc, char** argv) {
+        if (argc < 6) {
+            fprintf(stderr,
+                "Usage: %s <lv2_path> <uri> <audio_in> <audio_out> <params>\\n",
+                argv[0]);
+            return 1;
+        }
+
+        const char* lv2_path = argv[1];
+        const char* uri_str  = argv[2];
+        int exp_ain   = atoi(argv[3]);
+        int exp_aout  = atoi(argv[4]);
+        int exp_param = atoi(argv[5]);
+
+        setenv("LV2_PATH", lv2_path, 1);
+
+        LilvWorld* world = lilv_world_new();
+        lilv_world_load_all(world);
+
+        LilvNode* uri = lilv_new_uri(world, uri_str);
+        const LilvPlugin* plugin = lilv_plugins_get_by_uri(
+            lilv_world_get_all_plugins(world), uri);
+
+        if (!plugin) {
+            fprintf(stderr, "FAIL: plugin <%s> not found\\n", uri_str);
+            return 1;
+        }
+
+        LilvNode* name_node = lilv_plugin_get_name(plugin);
+        printf("Plugin: %s\\n", lilv_node_as_string(name_node));
+        lilv_node_free(name_node);
+
+        uint32_t n_ports = lilv_plugin_get_num_ports(plugin);
+        printf("Ports: %u\\n", n_ports);
+
+        /* Instantiate */
+        LilvInstance* inst = lilv_plugin_instantiate(plugin, SAMPLE_RATE, NULL);
+        if (!inst) {
+            fprintf(stderr, "FAIL: could not instantiate\\n");
+            return 1;
+        }
+        printf("Instantiated OK\\n");
+
+        /* URI nodes for port classification */
+        LilvNode* cls_audio   = lilv_new_uri(world,
+            "http://lv2plug.in/ns/lv2core#AudioPort");
+        LilvNode* cls_control = lilv_new_uri(world,
+            "http://lv2plug.in/ns/lv2core#ControlPort");
+        LilvNode* cls_input   = lilv_new_uri(world,
+            "http://lv2plug.in/ns/lv2core#InputPort");
+
+        /* Per-port storage */
+        float** bufs = (float**)calloc(n_ports, sizeof(float*));
+        float*  ctrl = (float*) calloc(n_ports, sizeof(float));
+        int ain = 0, aout = 0, cin = 0;
+
+        for (uint32_t p = 0; p < n_ports; p++) {
+            const LilvPort* port = lilv_plugin_get_port_by_index(plugin, p);
+            int is_in = lilv_port_is_a(plugin, port, cls_input);
+
+            if (lilv_port_is_a(plugin, port, cls_audio)) {
+                bufs[p] = (float*)calloc(BLOCK_SIZE, sizeof(float));
+                if (is_in) {
+                    for (int j = 0; j < BLOCK_SIZE; j++)
+                        bufs[p][j] = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+                    ain++;
+                } else {
+                    aout++;
+                }
+                lilv_instance_connect_port(inst, p, bufs[p]);
+            } else if (lilv_port_is_a(plugin, port, cls_control)) {
+                LilvNode* defval = NULL;
+                lilv_port_get_range(plugin, port, &defval, NULL, NULL);
+                if (defval) {
+                    ctrl[p] = lilv_node_as_float(defval);
+                    lilv_node_free(defval);
+                }
+                lilv_instance_connect_port(inst, p, &ctrl[p]);
+                if (is_in) cin++;
+            }
+        }
+
+        printf("Audio: %d in, %d out; Control: %d in\\n", ain, aout, cin);
+
+        int fail = 0;
+        if (ain != exp_ain) {
+            fprintf(stderr, "FAIL: audio_in %d != expected %d\\n", ain, exp_ain);
+            fail = 1;
+        }
+        if (aout != exp_aout) {
+            fprintf(stderr, "FAIL: audio_out %d != expected %d\\n", aout, exp_aout);
+            fail = 1;
+        }
+        if (cin != exp_param) {
+            fprintf(stderr, "FAIL: params %d != expected %d\\n", cin, exp_param);
+            fail = 1;
+        }
+
+        if (!fail) {
+            lilv_instance_activate(inst);
+
+            double energy = 0.0;
+            for (int blk = 0; blk < NUM_BLOCKS; blk++) {
+                for (uint32_t p = 0; p < n_ports; p++) {
+                    const LilvPort* port =
+                        lilv_plugin_get_port_by_index(plugin, p);
+                    if (lilv_port_is_a(plugin, port, cls_audio) &&
+                        lilv_port_is_a(plugin, port, cls_input)) {
+                        for (int j = 0; j < BLOCK_SIZE; j++)
+                            bufs[p][j] =
+                                ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+                    }
+                }
+
+                lilv_instance_run(inst, BLOCK_SIZE);
+
+                for (uint32_t p = 0; p < n_ports; p++) {
+                    const LilvPort* port =
+                        lilv_plugin_get_port_by_index(plugin, p);
+                    if (lilv_port_is_a(plugin, port, cls_audio) &&
+                        !lilv_port_is_a(plugin, port, cls_input)) {
+                        for (int j = 0; j < BLOCK_SIZE; j++)
+                            energy += (double)(bufs[p][j] * bufs[p][j]);
+                    }
+                }
+            }
+            printf("Output energy: %.6f (%d blocks)\\n", energy, NUM_BLOCKS);
+
+            if (ain > 0 && energy == 0.0) {
+                fprintf(stderr, "FAIL: zero output energy\\n");
+                fail = 1;
+            }
+
+            lilv_instance_deactivate(inst);
+        }
+
+        /* Cleanup */
+        lilv_instance_free(inst);
+        for (uint32_t p = 0; p < n_ports; p++)
+            free(bufs[p]);
+        free(bufs);
+        free(ctrl);
+        lilv_node_free(cls_audio);
+        lilv_node_free(cls_control);
+        lilv_node_free(cls_input);
+        lilv_node_free(uri);
+        lilv_world_free(world);
+
+        printf(fail ? "FAILED\\n" : "PASS\\n");
+        return fail;
+    }
+""")
+
+
+def _check_pkg_config_lilv() -> bool:
+    """Return True if pkg-config can resolve lilv-0."""
+    try:
+        result = subprocess.run(
+            ["pkg-config", "--exists", "lilv-0"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+_has_pkg_config_lilv = _check_pkg_config_lilv()
+
+
+@pytest.fixture(scope="session")
+def lv2_validator() -> Optional[Path]:
+    """Compile a minimal LV2 validator from C once per session.
+
+    Uses pkg-config for lilv-0 flags.  Returns None if lilv-0 is not
+    available or compilation fails.
+    """
+    if not _has_pkg_config_lilv:
+        return None
+
+    _LV2_VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
+    binary = _LV2_VALIDATOR_DIR / "lv2_validate"
+
+    if binary.is_file() and os.access(binary, os.X_OK):
+        return binary
+
+    src = _LV2_VALIDATOR_DIR / "lv2_validate.c"
+    src.write_text(_LV2_VALIDATOR_SRC)
+
+    try:
+        cflags = subprocess.run(
+            ["pkg-config", "--cflags", "lilv-0"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        libs = subprocess.run(
+            ["pkg-config", "--libs", "lilv-0"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    cmd = f"cc {cflags} {str(src)} {libs} -lm -o {str(binary)}"
+    result = subprocess.run(
+        cmd,
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=_LV2_VALIDATOR_DIR,
+    )
+    if result.returncode != 0:
+        print(f"LV2 validator compile failed:\n{result.stderr}")
+        return None
+
+    return binary

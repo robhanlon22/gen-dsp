@@ -1,0 +1,27 @@
+# Feedback delay with dry/wet mix.
+# Converts delay time from ms to samples, reads from a delay line
+# with feedback scaling, and crossfades dry/wet output.
+
+graph fbdelay (sr=44100) {
+    in input
+    out output = mix_out
+
+    param delay_ms 1..1000   = 250
+    param feedback 0..0.95   = 0.5
+    param mix      0..1      = 0.5
+
+    delay dline 48000
+
+    # Read from delay line
+    tap_samps = mstosamps(delay_ms)
+    delayed = delay_read dline (tap_samps)
+
+    # Write input + feedback into delay
+    fb_scaled = delayed * feedback
+    delay_write dline (input + fb_scaled)
+
+    # Dry/wet crossfade
+    dry     = input * (1 - mix)
+    wet     = delayed * mix
+    mix_out = dry + wet
+}

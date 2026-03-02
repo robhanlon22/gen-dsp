@@ -516,10 +516,10 @@ class TestScProjectGeneration:
         assert (gen_dir / "gen_dsp").is_dir()
         assert (gen_dir / "gen_dsp" / "genlib.cpp").is_file()
 
-    def test_cmakelists_shared_cache_off_by_default(
+    def test_cmakelists_shared_cache_on_by_default(
         self, gigaverb_export: Path, tmp_project: Path
     ):
-        """Test that default generation has shared cache OFF."""
+        """Test that default generation has shared cache ON."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -528,22 +528,22 @@ class TestScProjectGeneration:
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(OFF)" in cmake
+        assert "elseif(ON)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
-    def test_cmakelists_shared_cache_on(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that --shared-cache produces ON with resolved path."""
+    def test_cmakelists_shared_cache_off(
+        self, gigaverb_export: Path, tmp_project: Path
+    ):
+        """Test that --no-shared-cache produces OFF."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
-        config = ProjectConfig(name="testverb", platform="sc", shared_cache=True)
+        config = ProjectConfig(name="testverb", platform="sc", shared_cache=False)
         generator = ProjectGenerator(export_info, config)
         project_dir = generator.generate(tmp_project)
 
         cmake = (project_dir / "CMakeLists.txt").read_text()
-        assert "elseif(ON)" in cmake
-        assert "gen-dsp" in cmake
-        assert "fetchcontent" in cmake
+        assert "elseif(OFF)" in cmake
         assert "GEN_DSP_CACHE_DIR" in cmake
 
 
@@ -700,44 +700,3 @@ class TestScBuildIntegration:
         assert len(binaries) >= 1
 
         _validate_sc(project_dir, build_dir, "Spectraldelayfb", "spectraldelayfb", 3, 2)
-
-    @_skip_no_toolchain
-    def test_build_clean_rebuild(
-        self,
-        gigaverb_export: Path,
-        tmp_path: Path,
-        fetchcontent_cache: Path,
-        monkeypatch,
-    ):
-        """Test that clean + rebuild works via the platform API."""
-        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
-
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="sc")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        # Inject shared FetchContent cache
-        cmakelists = project_dir / "CMakeLists.txt"
-        original = cmakelists.read_text()
-        inject = (
-            f'set(FETCHCONTENT_BASE_DIR "{fetchcontent_cache}" CACHE PATH "" FORCE)\n'
-        )
-        cmakelists.write_text(inject + original)
-
-        platform = SuperColliderPlatform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        _validate_sc(project_dir, project_dir / "build", "Gigaverb", "gigaverb", 2, 2)

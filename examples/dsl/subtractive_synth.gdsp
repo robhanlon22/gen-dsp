@@ -1,0 +1,21 @@
+# Subtractive synthesizer: saw oscillator through a resonant SVF
+# with ADSR envelope on amplitude. No audio inputs (generator).
+
+graph subtractive_synth {
+    out output = result
+
+    param gate    0..1       = 0
+    param freq    20..20000  = 220
+    param cutoff  20..20000  = 2000
+    param q       0.1..20    = 2.0
+    param amp     0..1       = 0.5
+    param attack  1..5000    = 5
+    param decay   1..5000    = 100
+    param sustain 0..1       = 0.7
+    param release 1..5000    = 300
+
+    osc    = sawosc(freq)
+    filt   = svf(osc, cutoff, q, mode=lp)
+    env    = adsr(gate, attack, decay, sustain, release)
+    result = filt * env * amp
+}

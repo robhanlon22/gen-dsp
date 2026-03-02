@@ -101,6 +101,13 @@ try:
     from gen_dsp.graph.toposort import toposort
     from gen_dsp.graph.validate import GraphValidationError, validate_graph
     from gen_dsp.graph.visualize import graph_to_dot, graph_to_dot_file
+    from gen_dsp.graph.dsl import (
+        parse,
+        parse_file,
+        parse_multi,
+        GDSPSyntaxError,
+        GDSPCompileError,
+    )
 
     _AVAILABLE = True
 
@@ -181,8 +188,13 @@ __all__ = [
     "UnaryOp",
     "Wave",
     "Wrap",
+    "GDSPCompileError",
+    "GDSPSyntaxError",
     "merge",
     "parallel",
+    "parse",
+    "parse_file",
+    "parse_multi",
     "series",
     "split",
     "compile_for_gen_dsp",

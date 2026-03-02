@@ -56,5 +56,5 @@ class TestEntryPoint:
     def test_cli_main_importable(self):
         from gen_dsp.cli import main  # noqa: F401
 
-    def test_cli_create_parser_importable(self):
-        from gen_dsp.cli import create_parser  # noqa: F401
+    def test_cli_subcommands_importable(self):
+        from gen_dsp.cli import SUBCOMMANDS  # noqa: F401

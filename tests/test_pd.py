@@ -288,29 +288,3 @@ class TestPdBuildIntegration:
         assert output.stat().st_size > 0
 
         _validate_pd_external(project_dir, "spectraldelayfb")
-
-    @_skip_no_toolchain
-    def test_build_clean_rebuild(self, gigaverb_export: Path, tmp_path: Path):
-        """Test that clean + rebuild works via the platform API."""
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="pd")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        platform = PureDataPlatform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert "gigaverb~" in build_result.output_file.name
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        _validate_pd_external(project_dir, "gigaverb")

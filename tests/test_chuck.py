@@ -376,31 +376,6 @@ class TestChuckBuildIntegration:
         _validate_chugin(project_dir, "Spectraldelayfb", 0, expect_audio=True)
 
     @_skip_no_toolchain
-    def test_build_clean_rebuild(self, gigaverb_export: Path, tmp_path: Path):
-        """Test that clean + rebuild works via the platform API."""
-        project_dir = tmp_path / "gigaverb_rebuild"
-        parser = GenExportParser(gigaverb_export)
-        export_info = parser.parse()
-
-        config = ProjectConfig(name="gigaverb", platform="chuck")
-        generator = ProjectGenerator(export_info, config)
-        generator.generate(project_dir)
-
-        platform = ChuckPlatform()
-
-        # First build
-        build_result = platform.build(project_dir)
-        assert build_result.success
-        assert build_result.output_file is not None
-        assert build_result.output_file.name == "Gigaverb.chug"
-
-        # Clean + rebuild
-        build_result = platform.build(project_dir, clean=True)
-        assert build_result.success
-        assert build_result.output_file is not None
-
-        _validate_chugin(project_dir, "Gigaverb", 8, expect_audio=True)
-
     @_skip_no_chuck
     def test_load_chugin_in_chuck(self, gigaverb_export: Path, tmp_path: Path):
         """Build a chugin and verify ChucK can load and run it."""
