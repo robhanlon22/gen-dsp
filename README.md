@@ -1,8 +1,8 @@
 # gen-dsp
 
-gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting PureData, Max/MSP, ChucK, AudioUnit (AUv2), CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, and Circle. It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
+gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting PureData, Max/MSP, ChucK, AudioUnit (AUv2), CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, Circle, and Web Audio (WASM). It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
 
-gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python, JSON, or the purpose-built **GDSP DSL** (`.gdsp` files) and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
+gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python, JSON, or the purpose-built **GDSP DSL** (`.gdsp` files) and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right. The companion [dsp-graph](https://github.com/shakfu/dsp-graph) project provides a web-based visual graph editor and debugger (React + FastAPI) built on top of gen-dsp's `graph` backend.
 
 This project is a friendly fork of Michael Spears' [gen_ext](https://github.com/samesimilar/gen_ext) which was originally created to "compile code exported from a Max gen~ object into an "external" object that can be loaded into a PureData patch."
 
@@ -23,6 +23,7 @@ gen-dsp builds on macOS, Linux, and Windows. All platforms are tested in CI via 
 | VCV Rack | yes | yes | -- | make (Rack SDK) | `plugin.dylib` / `.so` / `.dll` |
 | Daisy | -- | yes | -- | make (libDaisy) | `.bin` (firmware) |
 | Circle | -- | yes | -- | make (Circle SDK) | `.img` (kernel image) |
+| Web Audio | yes | yes | yes | make (Emscripten) | `.wasm` + `processor.js` |
 
 Each platform has a detailed guide covering prerequisites, build details, SDK configuration, install paths, and troubleshooting:
 
@@ -39,6 +40,7 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 | VCV Rack | [docs/backends/vcvrack.md](docs/backends/vcvrack.md) |
 | Daisy | [docs/backends/daisy.md](docs/backends/daisy.md) |
 | Circle | [docs/backends/circle.md](docs/backends/circle.md) |
+| Web Audio | [docs/backends/webaudio.md](docs/backends/webaudio.md) |
 
 ## Key Improvements and Features
 
@@ -67,6 +69,8 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 - **Daisy support**: Generates Daisy Seed firmware (.bin) with custom genlib runtime (bump allocator for SRAM/SDRAM) -- first embedded/cross-compilation target, requires `arm-none-eabi-gcc`.
 
 - **Circle support**: Generates bare-metal Raspberry Pi kernel images (.img) for Pi Zero through Pi 5 using the [Circle](https://github.com/rsta2/circle) framework -- 14 board variants covering I2S, PWM, HDMI, and USB audio outputs. Supports multi-plugin mode via `--graph` with USB MIDI CC parameter control: linear chains use an optimized ping-pong buffer codegen path, while arbitrary DAGs (fan-out, fan-in via mixer nodes) use topological sort with per-edge buffer allocation.
+
+- **Web Audio support**: Generates browser-ready AudioWorklet + WASM modules from gen~ exports or graph sources. Emscripten compiles C++ to WebAssembly; the generated `processor.js` runs DSP in a real-time audio thread via `AudioWorkletProcessor`. Includes a demo page (`index.html`) with parameter sliders and a `make serve` target for local testing.
 
 - **Platform-specific patches**: Automatically fixes compatibility issues like the `exp2f -> exp2` problem in Max 9 exports on macOS.
 
@@ -133,7 +137,7 @@ The source type is auto-detected:
 
 Options:
 
-- `-p, --platform` - Target platform (required): `pd`, `max`, `chuck`, `au`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`
+- `-p, --platform` - Target platform (required): `pd`, `max`, `chuck`, `au`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`, `webaudio`
 - `-n, --name` - Name for the plugin (default: inferred from source)
 - `-o, --output` - Output directory (default: `./<name>_<platform>`)
 - `--no-build` - Skip building after project creation
@@ -198,7 +202,7 @@ To generate a platform project from a graph, use the default command: `gen-dsp m
 
 ## Graph Frontend: Define DSP Graphs in GDSP/Python/JSON
 
-The optional graph subpackage (`pip install gen-dsp[graph]`) provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in the GDSP DSL, Python, or JSON and compiles them to C++, generating buildable plugin projects through the same platform backends. While not intended to replace gen~, it may evolve into a useful frontend in its own right.
+The optional graph subpackage (`pip install gen-dsp[graph]`) provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in the GDSP DSL, Python, or JSON and compiles them to C++, generating buildable plugin projects through the same platform backends. While not intended to replace gen~, it may evolve into a useful frontend in its own right. For a visual editing experience, see the companion [dsp-graph](https://github.com/shakfu/dsp-graph) project -- a web-based graph editor and debugger built on top of this subpackage.
 
 ### Quick Start (GDSP)
 
@@ -524,6 +528,25 @@ The positional `export_path` argument is the base directory; each node's `export
 
 At runtime, connect a USB MIDI controller. Each node listens on its assigned MIDI channel for CC messages. With the default CC-by-index mapping, CC 0 controls parameter 0, CC 1 controls parameter 1, etc. Explicit `cc` mappings let you assign specific CC numbers to named parameters.
 
+## Web Audio
+
+See the [Web Audio guide](docs/backends/webaudio.md) for full details.
+
+```bash
+gen-dsp ./my_export -p webaudio
+# Output: build/myeffect.wasm + processor.js + index.html
+cd myeffect_webaudio && make serve
+# Open http://localhost:8080
+```
+
+Compiles gen~ exports or graph sources to WebAssembly via Emscripten. The generated project includes an `AudioWorkletProcessor` (`processor.js`) for real-time browser audio and a demo page (`index.html`) with parameter sliders. Works with any graph source -- generators (e.g. FM synth) produce audio directly; effects process noise input by default.
+
+```bash
+# From a graph source (standalone generator)
+gen-dsp fm_synth.gdsp -p webaudio
+cd fm_synth_webaudio && make serve
+```
+
 ## Shared FetchContent Cache
 
 CLAP, VST3, LV2, and SC backends use CMake FetchContent to download their SDKs/headers at configure time. By default each project downloads its own copy. Two opt-in mechanisms allow sharing a single download across projects:
@@ -569,6 +592,7 @@ The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` a
 - VCV Rack: first build requires network access to fetch Rack SDK (cached afterward); `RACK_DIR` env var can override auto-download; per-sample `perform(n=1)` has higher CPU overhead than block-based processing
 - Daisy: requires `arm-none-eabi-gcc` cross-compiler; first clone of libDaisy requires network access and `git`; v1 targets Daisy Seed only (no board-specific knob/CV mapping)
 - Circle: requires `aarch64-none-elf-gcc` (or `arm-none-eabi-gcc` for Pi Zero) cross-compiler; first clone of Circle SDK requires network access and `git`; output-only (no audio input capture); single-plugin mode requires manual GPIO/ADC code for parameter control; multi-plugin mode (`--graph`) supports linear chains and arbitrary DAGs (fan-out, fan-in via mixer nodes) but no buffers
+- Web Audio: requires Emscripten SDK (`emcc` on PATH); buffer loading not yet supported (browser file I/O is async/platform-specific)
 - Graph frontend: requires pydantic >= 2.0; simulation additionally requires numpy >= 1.24; Daisy, Circle, and VCV Rack platforms not yet supported for graph sources
 
 ## Requirements
@@ -649,6 +673,12 @@ The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` a
 - git (for cloning Circle SDK on first build)
 - Network access on first build (to clone Circle)
 
+### Web Audio builds
+
+- make
+- Emscripten SDK ([emsdk](https://emscripten.org/docs/getting_started/downloads.html) -- `emcc` on PATH)
+- Python 3 (for `make serve` demo server)
+
 ### macOS
 
 Install Xcode or Command Line Tools:
@@ -685,6 +715,7 @@ make test
 The Makefile includes targets for generating and building example plugins from the test fixtures:
 
 ```bash
+# gen~ export examples (from test fixtures)
 make example-pd       # PureData external
 make example-max      # Max/MSP external
 make example-chuck    # ChucK chugin
@@ -696,7 +727,12 @@ make example-sc       # SuperCollider UGen
 make example-vcvrack  # VCV Rack module (auto-downloads Rack SDK)
 make example-daisy    # Daisy firmware (requires arm-none-eabi-gcc)
 make example-circle   # Circle kernel image (requires aarch64-none-elf-gcc)
-make examples         # All platforms
+make examples         # All of the above
+
+# Graph examples (from .gdsp files)
+make graph-example-clap     # CLAP from graph
+make graph-example-webaudio # Web Audio WASM + demo page (defaults to fm_synth)
+make graph-examples         # All graph examples
 ```
 
 Override the fixture, name, or buffers:
@@ -707,7 +743,7 @@ make example-chuck FIXTURE=RamplePlayer NAME=rampleplayer BUFFERS="--buffers sam
 
 Available fixtures: `gigaverb` (default, no buffers), `RamplePlayer` (has buffers), `spectraldelayfb`.
 
-Output goes to `build/examples/`.
+Output goes to `build/examples/`. Web Audio examples include `make serve` in the generated project for local browser testing.
 
 ### Adding New Backends
 

@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Web Audio (AudioWorklet + WASM) backend** -- New `webaudio` platform compiles gen~ exports to WebAssembly via Emscripten (`emcc`). Output: `.wasm` + `.js` glue + `processor.js` (AudioWorkletProcessor). Make-based build (direct `emcc` invocation). Follows standard header isolation pattern with `_ext_webaudio.cpp` (genlib side) and `gen_ext_webaudio.cpp` (Emscripten bridge exporting `wa_create`, `wa_destroy`, `wa_perform`, param accessors via `EMSCRIPTEN_KEEPALIVE`). Graph adapter support included (`_makefile_webaudio` in `adapter.py`). Platform key: `"webaudio"`. No buffer loading support yet (browser async file I/O deferred to follow-up).
+- **Web Audio (AudioWorklet + WASM) backend** -- New `webaudio` platform compiles gen~ exports and graph sources to WebAssembly via Emscripten (`emcc`). Output: `.wasm` + `processor.js` (AudioWorkletProcessor with Emscripten glue concatenated at build time) + `index.html` (demo page with parameter sliders). Make-based build (direct `emcc` invocation). Follows standard header isolation pattern with `_ext_webaudio.cpp` (genlib side) and `gen_ext_webaudio.cpp` (Emscripten bridge exporting `wa_create`, `wa_destroy`, `wa_perform`, param accessors via `EMSCRIPTEN_KEEPALIVE`). WASM binary is fetched in the main thread and transferred to the AudioWorklet via `postMessage` to avoid AudioWorkletGlobalScope environment detection issues. Generated Makefile includes `make serve` target for local browser testing. Graph adapter support included (`_makefile_webaudio` in `adapter.py`). Platform key: `"webaudio"`. No buffer loading support yet (browser async file I/O deferred to follow-up).
+- **`make graph-example-webaudio`** -- Dev Makefile target that builds a Web Audio demo from a graph source (defaults to `fm_synth.gdsp`). Output includes a working `index.html` with `make serve` for browser playback.
 
 ### Changed
 
