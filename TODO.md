@@ -4,16 +4,6 @@ gen-dsp can be consumed as a library by [dsp-graph](https://github.com/shakfu/ds
 
 ---
 
-## High Priority
-
-### API surface (library contract with dsp-graph)
-
-- [x] **API documentation for graph subpackage** -- `docs/graph/api.md` written covering all public symbols: parse/parse_multi/parse_file, validate_graph, GraphValidationError, compile_graph, optimize_graph + individual passes, simulate/SimState/SimResult, graph_to_gdsp, graph_to_dot, series/parallel/split/merge, toposort, generate_adapter_cpp, generate_manifest, compile_for_gen_dsp, and ProjectGenerator.from_graph usage.
-
-- [x] **Stabilize GraphValidationError fields** -- all 14 `kind` values documented in the class docstring with descriptions of `node_id`, `field_name`, and `severity`. Fields are stable public API; dsp-graph can safely access `error.kind`, `error.node_id`, etc.
-
----
-
 ## Medium Priority
 
 ### Web Audio backend follow-ups
@@ -48,25 +38,9 @@ gen-dsp can be consumed as a library by [dsp-graph](https://github.com/shakfu/ds
 
 ## Low Priority / Housekeeping
 
-### Architecture
-
-- [x] **`cmake_platforms` set hardcoded in CLI** -- Added `list_cmake_platforms()` to `platforms/__init__.py` that derives the set dynamically via `issubclass(cls, CMakePlatform)`. Fixed CLI help text and stale comments. Merged misleading split dict in `adapter.py`.
-
-- [x] **`"both"` platform mode needs per-platform subdirectories or a warning** -- Verified "both" was unreachable from CLI (argparse `choices` excluded it). Removed dead code: the `"both"` branch in `_generate_from_export()`, the `+ ["both"]` in `validate()`, and stale comments.
-
-### Error Handling
-
-- [x] **Structured DSL compile errors** -- Added `line` and `col` fields to all expression AST nodes (`ASTNumber`, `ASTIdent`, `ASTBinExpr`, `ASTUnaryExpr`, `ASTCall`, `ASTDotAccess`, `ASTCompose`). Parser populates them from tokens. All `GDSPCompileError` raise sites now consistently carry source location. dsp-graph can safely access `error.line`, `error.col`, `error.filename` for inline editor markers.
-
-- [x] **`TemplateError` defined but never raised** -- Removed the dead `TemplateError` class from `errors.py`. Template-related failures continue to use `ProjectError`.
-
 ### Minor Code Quality
 
 - [ ] **`builder.py` may be too thin a wrapper** -- adds no logic beyond `get_platform(name).build()`. Note: dsp-graph calls `Builder(project_dir).build(platform)`, so removing the class would require a coordinated change in both repos.
-
-- [x] **`parser.py`: `validate_buffer_names()` recompiles regex every call** -- Hoisted to `C_IDENTIFIER_PATTERN` class constant.
-
-- [x] **`project.py`: `shared_cache` docstring** says "(clap, vst3)" but also applies to LV2 and SC. Fixed to say "CMake-based platforms".
 
 ### CLI / UX
 
