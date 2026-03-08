@@ -1,7 +1,8 @@
 # Development Makefile for gen_dsp Python package
 
 .PHONY: all install install-dev test test-cov clean dist publish-test publish \
-       help venv examples graph-examples lint format typecheck qa
+       help venv examples graph-examples lint format typecheck qa \
+       gen-export-examples
 
 VENV := .venv
 UV := uv
@@ -92,6 +93,49 @@ examples: $(PORTABLE_EXAMPLES)
 endif
 
 # ---------------------------------------------------------------------------
+# gen~ export examples from examples/gen_export/
+# Generates + builds all three example exports for every platform.
+# ---------------------------------------------------------------------------
+
+GEN_EXPORT_DIR := examples/gen_export
+GEN_EXPORTS := fm_bells slicer
+
+# Per-export buffer flags (only slicer has a buffer)
+BUFFERS_fm_bells :=
+BUFFERS_slicer := --buffers storage
+
+# Generate individual targets: gen-export-<name>-<platform>
+# e.g. make gen-export-fm_bells-clap
+define gen_export_platform_target
+gen-export-$(1)-$(2):
+	rm -rf $$(EXAMPLES_DIR)/$(1)_$(2)
+	$$(GEN_DSP) $$(GEN_EXPORT_DIR)/$(1) -n $(1) -p $(2) -o $$(EXAMPLES_DIR)/$(1)_$(2) $$(BUFFERS_$(1))
+endef
+
+$(foreach exp,$(GEN_EXPORTS),\
+  $(foreach plat,$(EXAMPLE_PLATFORMS),\
+    $(eval $(call gen_export_platform_target,$(exp),$(plat)))))
+
+# Per-export convenience targets: gen-export-<name> builds all platforms
+# e.g. make gen-export-slicer
+define gen_export_all_platforms_target
+gen-export-$(1): $(addprefix gen-export-$(1)-,$(EXAMPLE_PLATFORMS))
+endef
+
+ifeq ($(shell uname -s),Darwin)
+$(foreach exp,$(GEN_EXPORTS),$(eval $(call gen_export_all_platforms_target,$(exp))))
+else
+# Exclude AU on non-macOS
+define gen_export_all_platforms_target_nomac
+gen-export-$(1): $(addprefix gen-export-$(1)-,$(filter-out au,$(EXAMPLE_PLATFORMS)))
+endef
+$(foreach exp,$(GEN_EXPORTS),$(eval $(call gen_export_all_platforms_target_nomac,$(exp))))
+endif
+
+# Build all exports for all platforms
+gen-export-examples: $(addprefix gen-export-,$(GEN_EXPORTS))
+
+# ---------------------------------------------------------------------------
 # Graph examples (.gdsp / .json -> platform, generate + build in one step)
 # Override source: make graph-example-clap GRAPH=examples/json/fm_synth.json
 # ---------------------------------------------------------------------------
@@ -154,6 +198,12 @@ help:
 	@echo "  example-daisy    - Daisy firmware"
 	@echo "  example-circle   - Circle kernel image"
 	@echo "  examples         - Build all of the above"
+	@echo ""
+	@echo "gen~ export examples (from examples/gen_export/):"
+	@echo "  gen-export-fm_bells     - Build fm_bells for all platforms"
+	@echo "  gen-export-slicer       - Build slicer for all platforms"
+	@echo "  gen-export-examples     - Build both for all platforms"
+	@echo "  gen-export-<name>-<plat>- Single combo (e.g. gen-export-slicer-clap)"
 	@echo ""
 	@echo "Graph examples (GRAPH=examples/dsl/stereo_gain.gdsp):"
 	@echo "  graph-example-pd    - PureData from .gdsp/.json"

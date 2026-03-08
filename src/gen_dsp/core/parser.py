@@ -78,13 +78,21 @@ class GenExportParser:
     # These are genlib internal variables, not user buffers
     EXCLUDED_IDENTIFIERS = frozenset(
         {
-            "m_delay",
             "index",
             "this",
             "self",
             "__commonstate",
         }
     )
+
+    # Pattern for Data member declarations: Data m_XXX;
+    DATA_MEMBER_PATTERN = re.compile(r"\bData\s+(m_\w+)\s*;")
+
+    # Pattern for Data.reset("user_name", ...) calls to extract user-facing name
+    DATA_RESET_PATTERN = re.compile(r"\b(m_\w+)\.reset\s*\(\s*\"(\w+)\"")
+
+    # Prefixes for genlib-internal members (not user buffers)
+    INTERNAL_MEMBER_PREFIXES = ("m_delay", "__m_")
 
     def __init__(self, export_path: str | Path):
         """
@@ -204,18 +212,22 @@ class GenExportParser:
         """
         Detect buffer names from the gen~ export.
 
-        Looks for patterns like:
-        - buffer.dim (accessing buffer dimension)
-        - buffer.read( (reading from buffer)
-        - buffer.write( (writing to buffer)
-        - buffer.channels (accessing channel count)
+        Uses two detection strategies:
+
+        1. Direct buffer access patterns (older gen~ exports where buffers
+           are local variables like ``sample.dim``):
+           - buffer.dim, buffer.read(, buffer.write(, buffer.channels
+
+        2. Data member declarations (newer gen~ exports where buffers are
+           ``Data m_XXX;`` members with ``.reset("name", ...)`` calls):
+           - Extracts the user-facing name from the ``.reset()`` call
 
         Returns:
             List of unique buffer names found.
         """
         candidates: set[str] = set()
 
-        # Find all potential buffer accesses
+        # Strategy 1: direct buffer access patterns (non-member identifiers)
         for pattern in [
             self.BUFFER_DIM_PATTERN,
             self.BUFFER_READ_PATTERN,
@@ -224,13 +236,20 @@ class GenExportParser:
         ]:
             for match in pattern.finditer(content):
                 name = match.group(1)
-                # Filter out known non-buffer identifiers
                 if name not in self.EXCLUDED_IDENTIFIERS:
-                    # Also filter out identifiers starting with common prefixes
                     if not name.startswith(("m_", "__", "gen_")):
                         candidates.add(name)
 
-        # Sort for consistent ordering
+        # Strategy 2: Data member declarations with .reset("user_name", ...)
+        # Finds buffers like: Data m_storage_3; ... m_storage_3.reset("storage", ...)
+        data_members = set(self.DATA_MEMBER_PATTERN.findall(content))
+        for match in self.DATA_RESET_PATTERN.finditer(content):
+            member_name = match.group(1)
+            user_name = match.group(2)
+            if member_name in data_members:
+                if not member_name.startswith(self.INTERNAL_MEMBER_PREFIXES):
+                    candidates.add(user_name)
+
         return sorted(candidates)
 
     def _check_exp2f_issue(self) -> tuple[Optional[Path], bool]:

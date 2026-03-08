@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **gen~ export examples** -- Two example gen~ exports in `examples/gen_export/`: `fm_bells` (2in/2out stereo effect, 3 params, no buffers) and `slicer` (1in/1out mono effect with `Data` member buffer).
+- **`gen-export-examples` Makefile targets** -- New targets to build example exports for all platforms: `gen-export-<name>-<platform>` for individual combos (e.g. `make gen-export-slicer-clap`), `gen-export-<name>` for all platforms per export, and `gen-export-examples` for the full matrix (2 exports x 11 platforms). Buffer flags applied automatically per export.
+- **Parser tests for example exports** -- Test coverage for `fm_bells` and `slicer` parsing, including `Data` member buffer detection.
+
+### Fixed
+
+- **Parser buffer detection for `Data` member variables** -- gen~ exports using the `Data m_XXX;` member pattern (e.g. slicer's `m_storage_3`) were missed by the buffer detector because all `m_`-prefixed identifiers were excluded. Added a second detection strategy that finds `Data` member declarations and extracts the user-facing buffer name from `.reset("name", ...)` calls. Internal members (`m_delay_*`, `__m_*`) remain correctly excluded.
+
 ## [0.1.16]
 
 ### Added

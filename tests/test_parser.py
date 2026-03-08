@@ -47,6 +47,30 @@ class TestGenExportParser:
         assert info.num_inputs > 0
         assert info.num_outputs > 0
 
+    def test_parse_fm_bells_export(self, fm_bells_export: Path):
+        """Test parsing fm_bells export (no buffers, 2in/2out, 3 params)."""
+        parser = GenExportParser(fm_bells_export)
+        info = parser.parse()
+
+        assert info.name == "gen_exported"
+        assert info.num_inputs == 2
+        assert info.num_outputs == 2
+        assert info.num_params == 3
+        assert info.buffers == []
+        assert info.has_exp2f_issue is True
+
+    def test_parse_slicer_export(self, slicer_export: Path):
+        """Test parsing slicer export (Data member buffer, 1in/1out)."""
+        parser = GenExportParser(slicer_export)
+        info = parser.parse()
+
+        assert info.name == "gen_exported"
+        assert info.num_inputs == 1
+        assert info.num_outputs == 1
+        assert info.num_params == 3
+        assert "storage" in info.buffers
+        assert len(info.buffers) == 1
+
     def test_parse_invalid_path_raises_error(self, tmp_path: Path):
         """Test that parsing non-existent path raises ParseError."""
         with pytest.raises(ParseError, match="not a directory"):

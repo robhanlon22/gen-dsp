@@ -97,6 +97,24 @@ def spectraldelayfb_export(fixtures_dir: Path) -> Path:
 
 
 @pytest.fixture
+def examples_dir() -> Path:
+    """Path to the gen_export examples directory."""
+    return Path(__file__).parent.parent / "examples" / "gen_export"
+
+
+@pytest.fixture
+def fm_bells_export(examples_dir: Path) -> Path:
+    """Path to the fm_bells gen~ export (no buffers, 2in/2out)."""
+    return examples_dir / "fm_bells"
+
+
+@pytest.fixture
+def slicer_export(examples_dir: Path) -> Path:
+    """Path to the slicer gen~ export (has buffer, 1in/1out)."""
+    return examples_dir / "slicer"
+
+
+@pytest.fixture
 def tmp_project(tmp_path: Path) -> Path:
     """Temporary directory for project generation tests."""
     return tmp_path / "test_project"
