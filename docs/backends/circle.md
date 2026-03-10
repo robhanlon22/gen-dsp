@@ -34,7 +34,7 @@ brew install arm-none-eabi-gcc
 
 ```bash
 # Create a Circle project (default: pi3-i2s)
-gen-dsp init ./my_export -n myeffect -p circle -o ./myeffect_circle
+gen-dsp ./my_export -n myeffect -p circle -o ./myeffect_circle
 
 # Build (auto-clones and builds Circle SDK on first run)
 gen-dsp build ./myeffect_circle -p circle
@@ -49,7 +49,7 @@ gen-dsp build ./myeffect_circle -p circle
 Use `--board` to target a specific Pi model and audio output:
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p circle --board pi4-usb -o ./myeffect_pi4usb
+gen-dsp ./my_export -n myeffect -p circle --board pi4-usb -o ./myeffect_pi4usb
 ```
 
 Supported boards:
@@ -199,7 +199,7 @@ The firmware starts immediately -- there is no OS boot delay.
 - **`aarch64-none-elf-gcc` not found:** Download the AArch64 bare-metal toolchain from the [ARM GNU Toolchain Downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) page and add its `bin/` directory to your PATH. Note: this is **not** the same as `aarch64-linux-gnu-gcc` (which targets Linux, not bare metal).
 - **Circle clone fails:** Ensure git is installed and you have network access. The clone uses `--depth 1` for a minimal download. Set `GIT_TERMINAL_PROMPT=0` to prevent git from hanging on credential prompts.
 - **Circle build fails:** Ensure `aarch64-none-elf-gcc` is the correct toolchain (bare-metal, not Linux-targeted). Verify with `aarch64-none-elf-gcc --version`. The SDK build runs `./configure` followed by `./makeall`.
-- **`cmath: No such file or directory`:** The `cmath` shim file is missing from the project directory. Re-generate the project with `gen-dsp init`. Circle's `-nostdinc++` flag removes C++ standard library headers; the shim provides `<cmath>` via `<math.h>`.
+- **`cmath: No such file or directory`:** The `cmath` shim file is missing from the project directory. Re-generate the project with `gen-dsp`. Circle's `-nostdinc++` flag removes C++ standard library headers; the shim provides `<cmath>` via `<math.h>`.
 - **No audio output (I2S):** Verify DAC wiring: BCK -> GPIO 18, LRCK -> GPIO 19, DIN -> GPIO 21. Ensure `dtparam=i2s=on` is in `config.txt`. Check that the DAC receives 3.3V power.
 - **No audio output (USB):** USB DAC must be plugged in before power-on (no hot-plug support in bare metal). The USB host controller initializes during boot.
 - **No audio output (PWM):** PWM audio quality is limited (effective ~11-bit resolution). Connect headphones or powered speakers to the 3.5mm jack.

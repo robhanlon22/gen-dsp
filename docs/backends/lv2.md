@@ -15,7 +15,7 @@ Generates cross-platform LV2 plugins (`.lv2` bundle directories) from gen~ expor
 
 ```bash
 # Create an LV2 project
-gen-dsp init ./my_export -n myeffect -p lv2 -o ./myeffect_lv2
+gen-dsp ./my_export -n myeffect -p lv2 -o ./myeffect_lv2
 
 # Build
 cd myeffect_lv2
@@ -86,13 +86,10 @@ These are copied into the `.lv2` bundle directory during the CMake build.
 
 ### Shared FetchContent Cache
 
-By default, each project downloads its own copy of the LV2 headers. To share across projects:
+By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single download. Pass `--no-shared-cache` to disable this.
 
 ```bash
-# Bake OS-appropriate cache path into CMakeLists.txt
-gen-dsp init ./my_export -n myeffect -p lv2 --shared-cache
-
-# Or set at cmake configure time
+# Override the default shared cache at cmake configure time
 GEN_DSP_CACHE_DIR=/path/to/cache cmake ..
 ```
 
@@ -134,5 +131,5 @@ The `.lv2` bundle is a directory containing the shared library and both TTL file
 
 - **CMake configure fails on first run:** Network access is required to fetch LV2 headers. Ensure you have internet connectivity.
 - **Plugin not found by host:** Ensure the entire `.lv2` directory (not just the binary) is copied to the install path. The host needs both the binary and the TTL files.
-- **Parameter ranges look wrong:** Parameter min/max values are parsed from the gen~ export source code at project creation time. If you modify parameter ranges in your gen~ patch and re-export, re-run `gen-dsp init` to regenerate the TTL files.
+- **Parameter ranges look wrong:** Parameter min/max values are parsed from the gen~ export source code at project creation time. If you modify parameter ranges in your gen~ patch and re-export, re-run `gen-dsp` to regenerate the TTL files.
 - **`lv2:default` vs actual default:** The TTL generator parses actual default values from the gen~ export source code. Defaults are clamped to the declared [min, max] range. If your parameters have a different intended default, edit the generated `<name>.ttl` file.

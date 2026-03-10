@@ -15,7 +15,7 @@ Generates cross-platform SuperCollider UGens (`.scx` on macOS/Windows, `.so` on 
 
 ```bash
 # Create a SuperCollider project
-gen-dsp init ./my_export -n myeffect -p sc -o ./myeffect_sc
+gen-dsp ./my_export -n myeffect -p sc -o ./myeffect_sc
 
 # Build
 cd myeffect_sc
@@ -78,13 +78,10 @@ A `.sc` class file is generated at project creation time (alongside the C++ sour
 
 ### Shared FetchContent Cache
 
-The SC source tarball is ~80MB. To share across projects:
+The SC source tarball is ~80MB. By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single download. Pass `--no-shared-cache` to disable this.
 
 ```bash
-# Bake OS-appropriate cache path into CMakeLists.txt
-gen-dsp init ./my_export -n myeffect -p sc --shared-cache
-
-# Or set at cmake configure time
+# Override the default shared cache at cmake configure time
 GEN_DSP_CACHE_DIR=/path/to/cache cmake ..
 ```
 
@@ -137,5 +134,5 @@ s.boot;
 
 - **"Class not found" in sclang:** Ensure the `.sc` class file is installed alongside the binary in the Extensions directory. Recompile the class library (`Language > Recompile Class Library` or Cmd+Shift+L).
 - **"UGen not installed" at audio boot:** The binary (`.scx`/`.so`) is missing or in the wrong directory. Check the Extensions path with `Platform.userExtensionDir` in sclang.
-- **First build is slow:** The SC source tarball is ~80MB. Subsequent builds reuse the cached download. Consider `--shared-cache` if building multiple UGens.
+- **First build is slow:** The SC source tarball is ~80MB. Subsequent builds reuse the cached download. The shared cache is enabled by default; pass `--no-shared-cache` to disable it.
 - **Class name must start uppercase:** SC enforces this. gen-dsp handles it automatically, but if you copy files manually, ensure the `.sc` filename matches the capitalized class name (e.g., `Myeffect.sc`, not `myeffect.sc`).

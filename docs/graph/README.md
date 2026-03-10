@@ -205,26 +205,26 @@ All composed graphs work with `expand_subgraphs()`, `compile_graph()`, `validate
 
 ## CLI
 
-The `gen-dsp graph` subcommand group compiles, validates, and visualizes graph JSON files.
+The graph subcommands are top-level commands that compile, validate, and visualize graph files (`.gdsp` or `.json`).
 
 ```bash
 # Compile graph to C++ (stdout)
-gen-dsp graph compile graph.json
+gen-dsp compile graph.json
 
 # Compile to directory with optimization
-gen-dsp graph compile graph.json -o build/ --optimize
+gen-dsp compile graph.json -o build/ --optimize
 
 # Compile with platform adapter for a specific backend
-gen-dsp graph compile graph.json --platform chuck -o build/
+gen-dsp compile graph.json --platform chuck -o build/
 
-# Validate graph JSON
-gen-dsp graph validate graph.json
+# Validate graph
+gen-dsp validate graph.json
 
 # Generate DOT visualization (stdout or directory)
-gen-dsp graph dot graph.json -o build/
+gen-dsp dot graph.json -o build/
 
-# Generate a buildable plugin project directly from a graph JSON
-gen-dsp init --from-graph graph.json -n myeffect -p clap -o build/myeffect
+# Generate a buildable plugin project directly from a graph file
+gen-dsp graph.json -n myeffect -p clap -o build/myeffect
 ```
 
 ## Node Types (53)

@@ -21,7 +21,7 @@ xcode-select --install
 
 ```bash
 # Create a Max project
-gen-dsp init ./my_export -n myeffect -p max -o ./myeffect_max
+gen-dsp ./my_export -n myeffect -p max -o ./myeffect_max
 
 # Build (automatically clones max-sdk-base if needed)
 gen-dsp build ./myeffect_max -p max

@@ -21,7 +21,7 @@ xcode-select --install
 
 ```bash
 # Create a ChucK project
-gen-dsp init ./my_export -n myeffect -p chuck -o ./myeffect_chuck
+gen-dsp ./my_export -n myeffect -p chuck -o ./myeffect_chuck
 
 # Build
 cd myeffect_chuck

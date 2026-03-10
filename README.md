@@ -142,9 +142,15 @@ Options:
 - `-o, --output` - Output directory (default: `./<name>_<platform>`)
 - `--no-build` - Skip building after project creation
 - `--buffers` - Explicit buffer names (overrides auto-detection)
-- `--shared-cache` - Use a shared OS cache for FetchContent downloads (clap, vst3, lv2, sc only)
+- `--no-shared-cache` - Disable shared OS cache for FetchContent downloads (clap, vst3, lv2, sc; shared cache is enabled by default)
 - `--board` - Board variant for embedded platforms (Daisy: `seed`, `pod`, etc.; Circle: `pi3-i2s`, `pi4-usb`, etc.)
 - `--no-patch` - Skip automatic exp2f fix
+- `--no-midi` - Disable MIDI note handling
+- `--midi-gate NAME` - MIDI gate parameter name
+- `--midi-freq NAME` - MIDI frequency parameter name
+- `--midi-vel NAME` - MIDI velocity parameter name
+- `--midi-freq-unit {hz,midi}` - Unit for MIDI frequency parameter
+- `--voices N` - Polyphony voices (default: 1)
 - `--dry-run` - Preview without creating files
 
 ### build
@@ -185,9 +191,25 @@ gen-dsp patch <target-path> [--dry-run]
 
 Currently applies the `exp2f -> exp2` fix for macOS compatibility with Max 9 exports.
 
+### list
+
+List available platforms:
+
+```bash
+gen-dsp list
+```
+
+### cache
+
+Show cached SDKs:
+
+```bash
+gen-dsp cache
+```
+
 ### Graph subcommands (requires `gen-dsp[graph]`)
 
-Work with DSP signal graphs defined as `.gdsp` or JSON:
+Work with DSP signal graphs defined as `.gdsp` or JSON. These are top-level subcommands:
 
 ```bash
 gen-dsp compile <file> [-o DIR] [--optimize]
@@ -549,17 +571,9 @@ cd fm_synth_webaudio && make serve
 
 ## Shared FetchContent Cache
 
-CLAP, VST3, LV2, and SC backends use CMake FetchContent to download their SDKs/headers at configure time. By default each project downloads its own copy. Two opt-in mechanisms allow sharing a single download across projects:
+CLAP, VST3, LV2, and SC backends use CMake FetchContent to download their SDKs/headers at configure time. By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single SDK download. Pass `--no-shared-cache` to disable this and use CMake's default project-local `build/_deps/` instead.
 
-### `--shared-cache` flag
-
-Pass `--shared-cache` to bake an OS-appropriate cache path into the generated CMakeLists.txt:
-
-```bash
-gen-dsp ./my_export -p vst3 --shared-cache
-```
-
-This resolves to:
+The default shared cache resolves to:
 
 | OS | Cache path |
 |----|------------|
@@ -569,13 +583,13 @@ This resolves to:
 
 ### `GEN_DSP_CACHE_DIR` environment variable
 
-Set this at cmake configure time to override any baked-in path (or use it without `--shared-cache`):
+Set this at cmake configure time to override the default shared cache path:
 
 ```bash
 GEN_DSP_CACHE_DIR=/path/to/cache cmake ..
 ```
 
-The env var takes highest priority, followed by the `--shared-cache` path, followed by CMake's default (project-local `build/_deps/`).
+The env var takes highest priority, followed by the default shared cache path, followed by CMake's default (project-local `build/_deps/` when `--no-shared-cache` is used).
 
 The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` automatically, so `make example-clap`, `make example-vst3`, `make example-lv2`, and `make example-sc` share the same SDK cache used by tests.
 

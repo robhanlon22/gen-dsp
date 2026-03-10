@@ -15,7 +15,7 @@ Generates cross-platform VST3 plugins (`.vst3` bundles) from gen~ exports using 
 
 ```bash
 # Create a VST3 project
-gen-dsp init ./my_export -n myeffect -p vst3 -o ./myeffect_vst3
+gen-dsp ./my_export -n myeffect -p vst3 -o ./myeffect_vst3
 
 # Build
 cd myeffect_vst3
@@ -76,13 +76,10 @@ The generated CMakeLists.txt explicitly compiles `vstsinglecomponenteffect.cpp` 
 
 ### Shared FetchContent Cache
 
-By default, each project downloads its own copy of the VST3 SDK (~50MB). To share across projects:
+By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single SDK download. Pass `--no-shared-cache` to disable this.
 
 ```bash
-# Bake OS-appropriate cache path into CMakeLists.txt
-gen-dsp init ./my_export -n myeffect -p vst3 --shared-cache
-
-# Or set at cmake configure time
+# Override the default shared cache at cmake configure time
 GEN_DSP_CACHE_DIR=/path/to/cache cmake ..
 ```
 
@@ -131,4 +128,4 @@ The VST3 SDK is **GPL3/proprietary dual licensed**. If you distribute your plugi
 - **CMake configure hangs:** The VST3 SDK is ~50MB. The first download may take a while. If it seems stuck, check your network connection. Set `GIT_TERMINAL_PROMPT=0` in your environment to prevent git from prompting for credentials.
 - **`STR` macro redefinition warnings:** The VST3 SDK redefines `STR` as `STR16`. The gen-dsp wrapper uses `GSTR()` to avoid this conflict. No action needed.
 - **Plugin not appearing in DAW:** Ensure the `.vst3` bundle (it's a directory, not a single file) is in the correct install path. Restart the DAW to rescan.
-- **First build is slow:** The VST3 SDK is large. Subsequent builds reuse the cached SDK and are much faster. Consider `--shared-cache` if building multiple plugins.
+- **First build is slow:** The VST3 SDK is large. Subsequent builds reuse the cached SDK and are much faster. The shared cache is enabled by default; pass `--no-shared-cache` to disable it.

@@ -83,7 +83,7 @@ from gen_dsp.templates import get_templates_dir
 class YourPlatform(Platform):
     """YourPlatform implementation."""
 
-    name = "yourplatform"  # Used in CLI: gen-dsp init -p yourplatform
+    name = "yourplatform"  # Used in CLI: gen-dsp <source> -p yourplatform
 
     @property
     def extension(self) -> str:
@@ -349,7 +349,7 @@ __all__ = [
 
 **That's it!** The CLI will automatically pick up the new platform:
 
-- `gen-dsp init -p yourplatform` will work
+- `gen-dsp <source> -p yourplatform` will work
 - `gen-dsp build -p yourplatform` will work
 - Help text will show the new platform option
 

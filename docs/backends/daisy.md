@@ -36,7 +36,7 @@ sudo apt install gcc-arm-none-eabi
 
 ```bash
 # Create a Daisy project (default: Daisy Seed)
-gen-dsp init ./my_export -n myeffect -p daisy -o ./myeffect_daisy
+gen-dsp ./my_export -n myeffect -p daisy -o ./myeffect_daisy
 
 # Build (auto-clones libDaisy on first run)
 gen-dsp build ./myeffect_daisy -p daisy
@@ -52,7 +52,7 @@ dfu-util -a 0 -s 0x08000000:leave -D build/myeffect.bin
 Use `--board` to target a specific Daisy board:
 
 ```bash
-gen-dsp init ./my_export -n myeffect -p daisy --board pod -o ./myeffect_pod
+gen-dsp ./my_export -n myeffect -p daisy --board pod -o ./myeffect_pod
 ```
 
 Supported boards:

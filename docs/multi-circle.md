@@ -18,7 +18,7 @@ Both phases use the same JSON configuration format. A serial chain is just a lin
 
 ## JSON Graph Configuration
 
-The JSON file is an input to `gen-dsp init` at project generation time. The Python code generator reads it, validates the graph, resolves processing order, allocates intermediate buffers, and emits C code. No JSON parsing happens at runtime on the Pi -- the graph is "compiled" into a flat sequence of C function calls.
+The JSON file is an input to `gen-dsp` at project generation time. The Python code generator reads it, validates the graph, resolves processing order, allocates intermediate buffers, and emits C code. No JSON parsing happens at runtime on the Pi -- the graph is "compiled" into a flat sequence of C function calls.
 
 Parameter *values* and MIDI CC mappings are baked into the generated code from the JSON. **(Not yet implemented:** optional override via an INI file on the SD card at boot, for presets and controller remapping without recompilation.**)**
 
@@ -233,14 +233,14 @@ The same `ParamMapping` table can be driven by other input sources using the sam
 
 ```bash
 # Generate multi-plugin project from graph config
-gen-dsp init \
+gen-dsp chain ~/exports \
     --graph graph.json \
     --export ~/exports/gigaverb/gen \
     --export ~/exports/compressor/gen \
     --board pi4-i2s \
     --name my_fx_chain \
     -p circle \
-    my_fx_chain_circle
+    -o my_fx_chain_circle
 
 # Build
 gen-dsp build my_fx_chain_circle -p circle
@@ -286,10 +286,10 @@ Phase 1 uses the same JSON format as Phase 2. The only difference is that Phase 
 
 ### Compile-Time vs Runtime Configuration
 
-The JSON graph is a **compile-time** input. It is read by `gen-dsp init` in Python, and the output is generated C code with a hardcoded `process_graph()` function. No JSON parser runs on the Pi.
+The JSON graph is a **compile-time** input. It is read by `gen-dsp` in Python, and the output is generated C code with a hardcoded `process_graph()` function. No JSON parser runs on the Pi.
 
 This means:
-- Changing the graph topology requires re-running `gen-dsp init` + `build`
+- Changing the graph topology requires re-running `gen-dsp` + `build`
 - Changing parameter values does not -- presets could be loaded from SD card at boot **(not yet implemented)**
 - Changing MIDI CC mappings could go either way; baked-in defaults with optional SD card overrides is the pragmatic choice **(SD card overrides not yet implemented)**
 

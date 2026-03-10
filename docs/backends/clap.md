@@ -15,7 +15,7 @@ Generates cross-platform CLAP plugins (`.clap` bundles on macOS, shared librarie
 
 ```bash
 # Create a CLAP project
-gen-dsp init ./my_export -n myeffect -p clap -o ./myeffect_clap
+gen-dsp ./my_export -n myeffect -p clap -o ./myeffect_clap
 
 # Build
 cd myeffect_clap
@@ -74,13 +74,10 @@ Buffer support follows the standard gen-dsp pattern. Up to 5 single-channel buff
 
 ### Shared FetchContent Cache
 
-By default, each project downloads its own copy of the CLAP headers. To share across projects:
+By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single download. Pass `--no-shared-cache` to disable this.
 
 ```bash
-# Bake OS-appropriate cache path into CMakeLists.txt
-gen-dsp init ./my_export -n myeffect -p clap --shared-cache
-
-# Or set at cmake configure time
+# Override the default shared cache at cmake configure time
 GEN_DSP_CACHE_DIR=/path/to/cache cmake ..
 ```
 

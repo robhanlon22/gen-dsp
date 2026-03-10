@@ -98,14 +98,14 @@ For 0-input (generator) plugins, gen-dsp auto-detects MIDI parameter mappings by
 
 ```bash
 # Auto-detection (default for 0-input plugins) -- no flags needed
-gen-dsp init export/ --platform vst3 --name mysynth
+gen-dsp export/ --platform vst3 --name mysynth
 
 # Override auto-detected names (e.g. param is called "note" not "freq")
-gen-dsp init export/ --platform vst3 --name mysynth \
+gen-dsp export/ --platform vst3 --name mysynth \
     --midi-freq note --midi-gate trig
 
 # Force MIDI off even if gate/freq params are present
-gen-dsp init export/ --platform vst3 --name mysynth --no-midi
+gen-dsp export/ --platform vst3 --name mysynth --no-midi
 ```
 
 The explicit `--midi-freq` / `--midi-gate` / `--midi-vel` flags serve two purposes: override auto-detected names, or force MIDI mapping for params with non-standard names (even when auto-detection wouldn't find them). Any explicit `--midi-*` flag implies MIDI is enabled regardless of auto-detection.
@@ -226,7 +226,7 @@ typedef struct {
 ### CLI interface
 
 ```bash
-gen-dsp init export/ --platform clap --name polysynth \
+gen-dsp export/ --platform clap --name polysynth \
     --midi-freq freq --midi-gate gate --midi-vel velocity \
     --voices 8
 ```

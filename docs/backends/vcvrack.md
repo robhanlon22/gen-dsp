@@ -17,7 +17,7 @@ The Rack SDK is automatically downloaded and cached on first build. No manual SD
 
 ```bash
 # Create a VCV Rack project
-gen-dsp init ./my_export -n myeffect -p vcvrack -o ./myeffect_vcvrack
+gen-dsp ./my_export -n myeffect -p vcvrack -o ./myeffect_vcvrack
 
 # Build (auto-downloads Rack SDK if needed)
 gen-dsp build ./myeffect_vcvrack -p vcvrack

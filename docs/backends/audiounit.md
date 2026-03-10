@@ -21,7 +21,7 @@ No external SDK is needed -- only system frameworks (AudioToolbox, CoreFoundatio
 
 ```bash
 # Create an AudioUnit project
-gen-dsp init ./my_export -n myeffect -p au -o ./myeffect_au
+gen-dsp ./my_export -n myeffect -p au -o ./myeffect_au
 
 # Build
 cd myeffect_au

@@ -23,7 +23,7 @@ On Linux, standard build tools (gcc, make) are typically pre-installed.
 
 ```bash
 # Create a PureData project
-gen-dsp init ./my_export -n myeffect -p pd -o ./myeffect_pd
+gen-dsp ./my_export -n myeffect -p pd -o ./myeffect_pd
 
 # Build
 cd myeffect_pd
