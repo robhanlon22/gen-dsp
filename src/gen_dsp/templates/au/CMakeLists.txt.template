@@ -49,6 +49,7 @@ target_compile_definitions($${PROJECT_NAME} PRIVATE
     AU_NUM_INPUTS=$num_inputs
     AU_NUM_OUTPUTS=$num_outputs
     $midi_defines
+    $remap_defines
 )
 
 # Compiler options

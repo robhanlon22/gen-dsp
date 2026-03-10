@@ -58,3 +58,4 @@ CPPFLAGS += -DCIRCLE_NUM_INPUTS=$num_inputs
 CPPFLAGS += -DCIRCLE_NUM_OUTPUTS=$num_outputs
 CPPFLAGS += -DCIRCLE_NUM_PARAMS=$num_params
 CPPFLAGS += -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter
+$remap_defines

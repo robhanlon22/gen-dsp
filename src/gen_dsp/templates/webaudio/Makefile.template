@@ -22,6 +22,7 @@ CFLAGS = -I. -I./gen -I./gen/gen_dsp \
     -DGEN_EXPORTED_HEADER=\"$gen_name.h\" \
     -DGEN_EXPORTED_CPP=\"$gen_name.cpp\" \
     -Wno-unused-function -Wno-unused-variable
+$remap_defines
 
 CXXFLAGS = -std=c++11
 

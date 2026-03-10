@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from gen_dsp.core.graph import EdgeBuffer, GraphConfig, ResolvedChainNode
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
@@ -988,6 +988,7 @@ class CirclePlatform(Platform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "circle")
+        self.copy_remap_header(output_dir)
 
         # Select template based on audio device type
         if board.audio_device == "usb":
@@ -1007,6 +1008,11 @@ class CirclePlatform(Platform):
         # Resolve default CIRCLE_DIR for baking into Makefile
         default_circle_dir = str(_get_default_circle_dir())
 
+        # Build input remap compile definitions (both CFLAGS and CPPFLAGS)
+        remap_defines = build_remap_defines_make(
+            manifest, ["CFLAGS", "CPPFLAGS"]
+        )
+
         # Generate Makefile from template
         self._generate_makefile(
             templates_dir / "Makefile.template",
@@ -1018,6 +1024,7 @@ class CirclePlatform(Platform):
             manifest.num_params,
             default_circle_dir,
             board,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -1046,6 +1053,7 @@ class CirclePlatform(Platform):
         num_params: int,
         default_circle_dir: str,
         board: CircleBoardConfig,
+        remap_defines: str = "",
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
@@ -1065,6 +1073,7 @@ class CirclePlatform(Platform):
             aarch=board.aarch,
             prefix=board.prefix,
             extra_libs=_get_extra_libs(board.audio_device),
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

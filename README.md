@@ -151,6 +151,7 @@ Options:
 - `--midi-vel NAME` - MIDI velocity parameter name
 - `--midi-freq-unit {hz,midi}` - Unit for MIDI frequency parameter
 - `--voices N` - Polyphony voices (default: 1)
+- `--inputs-as-params [NAME ...]` - Remap signal inputs to parameters. No names = remap all; with names = remap only those inputs (see [docs/inputs_as_params.md](docs/inputs_as_params.md))
 - `--dry-run` - Preview without creating files
 
 ### build
@@ -337,6 +338,20 @@ gen-dsp sim lowpass.json -i in1=input.wav -o ./output/ --param cutoff=0.8
 54 built-in node types covering ~89% of gen~ operators: `BinOp` (add/sub/mul/div/pow/mod/min/max/rsub/rdiv/rmod/absdiff/hypot/atan2/step/and/or/xor/gtp/ltp/gtep/ltep/eqp/neqp/fastpow), `UnaryOp` (abs/neg/sqrt/exp/log/sin/cos/tan/tanh/floor/ceil/round/sign/atan/asin/acos/not/bool/exp2/log2/log10/sinh/cosh/asinh/acosh/atanh/trunc/fract/atodb/dbtoa/ftom/mtof/phasewrap/degrees/radians/mstosamps/sampstoms/t60/t60time/fixdenorm/fixnan/isdenorm/isnan/fastsin/fastcos/fasttan/fastexp), `SinOsc`, `SawOsc`, `PulseOsc`, `TriOsc`, `Phasor`, `Noise`, `OnePole`, `Biquad`, `SVF`, `Allpass`, `DCBlock`, `History`, `DelayLine`/`DelayRead`/`DelayWrite`, `Buffer`/`BufRead`/`BufWrite`/`BufSize`/`Splat`/`Peek`, `Cycle`, `Wave`, `Lookup`, `ADSR`, `Accum`, `Counter`, `MulAccum`, `Clamp`, `Wrap`, `Fold`, `Scale`, `Mix`, `Smoothstep`, `Select`, `Compare`, `GateRoute`/`GateOut`, `Selector`, `Change`, `Delta`, `Latch`, `SampleHold`, `Slide`, `Elapsed`, `RateDiv`, `SmoothParam`, `Constant`, `NamedConstant`, `SampleRate`, `Pass`, `Subgraph`.
 
 ## Features
+
+### Input-to-Parameter Remapping
+
+In gen~, all external inputs are signal-rate `in` objects -- there's no distinction between audio and control data. When a patch uses signal inputs for control values (pitch, gate, etc.), the resulting plugin is misclassified as an effect. `--inputs-as-params` remaps those inputs to host-visible parameters:
+
+```bash
+# Remap all signal inputs to parameters
+gen-dsp ./fm_bells -p clap --inputs-as-params
+
+# Remap only specific inputs by name
+gen-dsp ./fm_bells -p clap --inputs-as-params carrier "c/m ratio"
+```
+
+This turns a 2-input effect into a 0-input generator/instrument with 2 additional parameters. Works on all 11 platforms. See [docs/inputs_as_params.md](docs/inputs_as_params.md) for details.
 
 ### Automatic Buffer Detection
 

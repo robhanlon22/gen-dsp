@@ -18,7 +18,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from gen_dsp.core.manifest import Manifest, ParamInfo
+from gen_dsp.core.manifest import Manifest, ParamInfo, build_remap_defines
 from gen_dsp.core.midi import build_midi_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import ProjectError
@@ -70,6 +70,7 @@ class Lv2Platform(CMakePlatform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "lv2")
+        self.copy_remap_header(output_dir)
         self.copy_voice_alloc_header(output_dir, config)
 
         # Build MIDI compile definitions
@@ -94,6 +95,9 @@ class Lv2Platform(CMakePlatform):
         # Resolve shared cache settings
         use_shared_cache, cache_dir = self.resolve_shared_cache(config)
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines(manifest)
+
         # Generate CMakeLists.txt
         self._generate_cmakelists(
             templates_dir / "CMakeLists.txt.template",
@@ -106,6 +110,7 @@ class Lv2Platform(CMakePlatform):
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
             midi_defines=midi_defines,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -290,6 +295,7 @@ class Lv2Platform(CMakePlatform):
         use_shared_cache: str = "OFF",
         cache_dir: str = "",
         midi_defines: str = "",
+        remap_defines: str = "",
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
@@ -307,6 +313,7 @@ class Lv2Platform(CMakePlatform):
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
             midi_defines=midi_defines,
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

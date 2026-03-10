@@ -12,7 +12,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
@@ -59,6 +59,7 @@ class WebAudioPlatform(Platform):
 
         # Generate _ext_webaudio.h via shared template
         self.generate_ext_header(output_dir, "webaudio")
+        self.copy_remap_header(output_dir)
 
         # Generate gen_ext_webaudio.cpp from template
         self._generate_from_template(
@@ -77,6 +78,9 @@ class WebAudioPlatform(Platform):
             header_comment="Buffer configuration for gen_dsp Web Audio wrapper",
         )
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines_make(manifest, "CFLAGS")
+
         # Generate Makefile from template
         export_name = self._make_export_name(lib_name)
         self._generate_from_template(
@@ -86,6 +90,7 @@ class WebAudioPlatform(Platform):
             gen_name=manifest.gen_name,
             genext_version=self.GENEXT_VERSION,
             export_name=export_name,
+            remap_defines=remap_defines,
         )
 
         # Generate _processor.js from template (concatenated with Emscripten

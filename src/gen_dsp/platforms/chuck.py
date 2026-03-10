@@ -11,7 +11,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
@@ -65,6 +65,8 @@ class ChuckPlatform(Platform):
             if src.exists():
                 shutil.copy2(src, output_dir / filename)
 
+        self.copy_remap_header(output_dir)
+
         # Copy chugin.h (bundled header in chuck/include/)
         chugin_include_src = templates_dir / "chuck" / "include"
         chugin_include_dst = output_dir / "chuck" / "include"
@@ -74,12 +76,16 @@ class ChuckPlatform(Platform):
             chugin_include_dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(chugin_include_src, chugin_include_dst)
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines_make(manifest, "FLAGS")
+
         # Generate makefile from template
         self._generate_makefile(
             templates_dir / "makefile.template",
             output_dir / "makefile",
             manifest.gen_name,
             lib_name,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -102,6 +108,7 @@ class ChuckPlatform(Platform):
         output_path: Path,
         gen_name: str,
         lib_name: str,
+        remap_defines: str = "",
     ) -> None:
         """Generate makefile from template."""
         if template_path.exists():
@@ -111,6 +118,7 @@ class ChuckPlatform(Platform):
                 gen_name=gen_name,
                 lib_name=self._capitalize_name(lib_name),
                 genext_version=self.GENEXT_VERSION,
+                remap_defines=remap_defines,
             )
         else:
             raise ProjectError(f"makefile template not found at {template_path}")

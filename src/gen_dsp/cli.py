@@ -78,6 +78,8 @@ Default command (auto-detects source type):
   --midi-vel NAME           MIDI velocity parameter name
   --midi-freq-unit {{hz,midi}}
   --voices N                Polyphony voices (default: 1)
+  --inputs-as-params [NAME ...]
+                            Remap signal inputs to params (all or named)
 
 Subcommands:
   compile <file>            Compile graph to C++ (stdout or -o dir)
@@ -184,6 +186,14 @@ def _make_default_parser() -> argparse.ArgumentParser:
         default=1,
         metavar="N",
         help="Number of polyphony voices (default: 1 = monophonic, requires MIDI)",
+    )
+    parser.add_argument(
+        "--inputs-as-params",
+        nargs="*",
+        default=None,
+        metavar="NAME",
+        help="Remap signal inputs to parameters. "
+        "No names = remap all; with names = remap only those inputs.",
     )
     parser.add_argument(
         "--dry-run",
@@ -535,6 +545,7 @@ def _cmd_default_export(args: argparse.Namespace, export_path: Path) -> int:
         midi_vel=args.midi_vel,
         midi_freq_unit=args.midi_freq_unit,
         num_voices=args.voices,
+        inputs_as_params=args.inputs_as_params,
     )
 
     # Validate

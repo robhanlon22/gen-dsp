@@ -58,6 +58,10 @@ class ProjectConfig:
     midi_freq_unit: str = "hz"
     num_voices: int = 1
 
+    # Signal inputs to remap as parameters.
+    # None = don't remap, [] = remap all, ["name", ...] = remap named subset
+    inputs_as_params: Optional[list[str]] = None
+
     # Computed MIDI mapping (populated by ProjectGenerator.generate())
     midi_mapping: Optional["MidiMapping"] = None
 
@@ -216,6 +220,15 @@ class ProjectGenerator:
         manifest = manifest_from_export_info(
             self.export_info, buffers, Platform.GENEXT_VERSION
         )
+
+        # Apply input-to-parameter remapping if requested
+        if self.config.inputs_as_params is not None:
+            from gen_dsp.core.manifest import apply_inputs_as_params
+
+            remap_names = self.config.inputs_as_params if self.config.inputs_as_params else None
+            manifest = apply_inputs_as_params(
+                manifest, self.export_info.input_names, remap_names
+            )
 
         # Compute MIDI mapping (used by platforms that support MIDI)
         from gen_dsp.core.midi import detect_midi_mapping

@@ -30,6 +30,7 @@ FLAGS += -DVCR_NUM_OUTPUTS=$num_outputs
 FLAGS += -DVCR_NUM_PARAMS=$num_params
 FLAGS += -DVCR_PANEL_HP=$panel_hp
 FLAGS += -Wno-unused-function -Wno-unused-variable
+$remap_defines
 
 # Distributables for packaging
 DISTRIBUTABLES += res plugin.json

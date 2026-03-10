@@ -31,7 +31,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
@@ -378,6 +378,7 @@ class DaisyPlatform(Platform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "daisy")
+        self.copy_remap_header(output_dir)
 
         # Generate gen_ext_daisy.cpp from template (board-specific)
         self._generate_ext_daisy(
@@ -390,6 +391,11 @@ class DaisyPlatform(Platform):
         # Resolve default LIBDAISY_DIR for baking into Makefile
         default_libdaisy_dir = str(_get_default_libdaisy_dir())
 
+        # Build input remap compile definitions (both CFLAGS and CPPFLAGS)
+        remap_defines = build_remap_defines_make(
+            manifest, ["CFLAGS", "CPPFLAGS"]
+        )
+
         # Generate Makefile from template
         self._generate_makefile(
             templates_dir / "Makefile.template",
@@ -400,6 +406,7 @@ class DaisyPlatform(Platform):
             manifest.num_outputs,
             manifest.num_params,
             default_libdaisy_dir,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -420,6 +427,7 @@ class DaisyPlatform(Platform):
         num_outputs: int,
         num_params: int,
         default_libdaisy_dir: str,
+        remap_defines: str = "",
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
@@ -435,6 +443,7 @@ class DaisyPlatform(Platform):
             num_outputs=num_outputs,
             num_params=num_params,
             default_libdaisy_dir=default_libdaisy_dir,
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

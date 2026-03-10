@@ -11,7 +11,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines
 from gen_dsp.core.midi import build_midi_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import ProjectError
@@ -55,6 +55,7 @@ class ClapPlatform(CMakePlatform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "clap")
+        self.copy_remap_header(output_dir)
         self.copy_voice_alloc_header(output_dir, config)
 
         # Resolve shared cache settings
@@ -63,6 +64,9 @@ class ClapPlatform(CMakePlatform):
         # Build MIDI compile definitions
         midi_mapping = config.midi_mapping if config else None
         midi_defines = build_midi_defines(midi_mapping)
+
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines(manifest)
 
         # Generate CMakeLists.txt
         self._generate_cmakelists(
@@ -75,6 +79,7 @@ class ClapPlatform(CMakePlatform):
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
             midi_defines=midi_defines,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -99,6 +104,7 @@ class ClapPlatform(CMakePlatform):
         use_shared_cache: str = "OFF",
         cache_dir: str = "",
         midi_defines: str = "",
+        remap_defines: str = "",
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
@@ -115,6 +121,7 @@ class ClapPlatform(CMakePlatform):
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
             midi_defines=midi_defines,
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

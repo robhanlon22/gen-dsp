@@ -68,6 +68,7 @@ FLAGS+=-DGEN_EXPORTED_NAME=$gen_name
 FLAGS+=-DGEN_EXPORTED_HEADER=\"$gen_name.h\"
 FLAGS+=-DGEN_EXPORTED_CPP=\"$gen_name.cpp\"
 FLAGS+=-Wno-unused-function -Wno-unused-variable
+$remap_defines
 
 # C++ standard (required to avoid exp2/trunc conflicts with genlib)
 CXXFLAGS+=-std=c++11

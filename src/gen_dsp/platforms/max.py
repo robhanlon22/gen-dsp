@@ -12,7 +12,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.cmake_platform import CMakePlatform
@@ -70,12 +70,18 @@ class MaxPlatform(CMakePlatform):
             if src.exists():
                 shutil.copy2(src, output_dir / filename)
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines(manifest)
+
+        self.copy_remap_header(output_dir)
+
         # Generate CMakeLists.txt
         self._generate_cmakelists(
             templates_dir / "CMakeLists.txt.template",
             output_dir / "CMakeLists.txt",
             manifest.gen_name,
             lib_name,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -98,6 +104,7 @@ class MaxPlatform(CMakePlatform):
         output_path: Path,
         gen_name: str,
         lib_name: str,
+        remap_defines: str = "",
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if template_path.exists():
@@ -107,6 +114,7 @@ class MaxPlatform(CMakePlatform):
                 gen_name=gen_name,
                 lib_name=lib_name,
                 genext_version=self.GENEXT_VERSION,
+                remap_defines=remap_defines,
             )
         else:
             raise ProjectError(f"CMakeLists.txt template not found at {template_path}")

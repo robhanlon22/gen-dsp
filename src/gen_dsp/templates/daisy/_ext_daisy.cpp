@@ -96,6 +96,11 @@ static const char* buffer_names[] = {
 
 using namespace GEN_EXPORTED_NAME;
 
+static float _silence[8192] = {0};
+
+// Input-to-parameter remapping support
+#include "gen_remap_inputs.h"
+
 // Wrapper function implementations
 GenState* wrapper_create(float sr, long bs) {
     return (GenState*)create((double)sr, (long)bs);
@@ -110,12 +115,20 @@ void wrapper_reset(GenState* state) {
 }
 
 void wrapper_perform(GenState* state, float** ins, long numins, float** outs, long numouts, long n) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    _remap_perform((CommonState*)state, ins, numins, outs, numouts, n);
+#else
     // t_sample is float (GENLIB_USE_FLOAT32), so we can cast directly
     perform((CommonState*)state, (t_sample**)ins, numins, (t_sample**)outs, numouts, n);
+#endif
 }
 
 int wrapper_num_inputs() {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    return num_inputs() - REMAP_INPUT_COUNT;
+#else
     return num_inputs();
+#endif
 }
 
 int wrapper_num_outputs() {
@@ -123,34 +136,68 @@ int wrapper_num_outputs() {
 }
 
 int wrapper_num_params() {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    return _remap_total_params();
+#else
     return num_params();
+#endif
 }
 
 const char* wrapper_param_name(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return _remap_param_names[_remap_slot_from_param(index)];
+#endif
     return getparametername((CommonState*)state, index);
 }
 
 const char* wrapper_param_units(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return "";
+#endif
     return getparameterunits((CommonState*)state, index);
 }
 
 float wrapper_param_min(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return 0.0f;
+#endif
     return (float)getparametermin((CommonState*)state, index);
 }
 
 float wrapper_param_max(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return 1.0f;
+#endif
     return (float)getparametermax((CommonState*)state, index);
 }
 
 char wrapper_param_hasminmax(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return 0;
+#endif
     return getparameterhasminmax((CommonState*)state, index);
 }
 
 void wrapper_set_param(GenState* state, int index, float value) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index)) {
+        _remap_param_values[_remap_slot_from_param(index)] = value;
+        return;
+    }
+#endif
     setparameter((CommonState*)state, index, (double)value, nullptr);
 }
 
 float wrapper_get_param(GenState* state, int index) {
+#if defined(REMAP_INPUT_COUNT) && REMAP_INPUT_COUNT > 0
+    if (_is_remap_param(index))
+        return _remap_param_values[_remap_slot_from_param(index)];
+#endif
     t_param val = 0;
     getparameter((CommonState*)state, index, &val);
     return (float)val;

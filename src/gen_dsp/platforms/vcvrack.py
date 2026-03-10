@@ -32,7 +32,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform, PluginCategory
@@ -201,6 +201,7 @@ class VcvRackPlatform(Platform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "vcvrack")
+        self.copy_remap_header(output_dir)
 
         # Compute panel HP
         total_components = (
@@ -210,6 +211,9 @@ class VcvRackPlatform(Platform):
 
         # Resolve default RACK_DIR for baking into Makefile
         default_rack_dir = str(_get_default_rack_sdk_dir())
+
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines_make(manifest, "FLAGS")
 
         # Generate Makefile from template
         self._generate_makefile(
@@ -222,6 +226,7 @@ class VcvRackPlatform(Platform):
             manifest.num_params,
             panel_hp,
             default_rack_dir,
+            remap_defines=remap_defines,
         )
 
         # Generate plugin.json manifest
@@ -278,6 +283,7 @@ class VcvRackPlatform(Platform):
         num_params: int,
         panel_hp: int,
         default_rack_dir: str,
+        remap_defines: str = "",
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
@@ -294,6 +300,7 @@ class VcvRackPlatform(Platform):
             num_params=num_params,
             panel_hp=panel_hp,
             default_rack_dir=default_rack_dir,
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

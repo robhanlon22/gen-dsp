@@ -50,6 +50,9 @@ class ExportInfo:
     # Path to genlib_ops.h (where exp2f issue occurs)
     genlib_ops_path: Optional[Path] = None
 
+    # Signal input names (from gen_kernel_innames[], e.g. ["carrier", "c/m ratio"])
+    input_names: list[str] = field(default_factory=list)
+
 
 class GenExportParser:
     """Parser for gen~ exported code directories."""
@@ -70,6 +73,11 @@ class GenExportParser:
 
     # Pattern for num_params
     NUMPARAMS_PATTERN = re.compile(r"int\s+num_params\s*\(\s*\)\s*\{\s*return\s+(\d+)")
+
+    # Pattern for input names: const char *gen_kernel_innames[] = { "carrier", "c/m ratio" };
+    INNAMES_PATTERN = re.compile(
+        r'(?:const\s+)?char\s*\*\s*gen_kernel_innames\s*\[\s*\]\s*=\s*\{([^}]+)\}'
+    )
 
     # Pattern for exp2f issue
     EXP2F_PATTERN = re.compile(r"\bexp2f\s*\(")
@@ -137,6 +145,9 @@ class GenExportParser:
         info.num_inputs = self._extract_numins(cpp_content)
         info.num_outputs = self._extract_numouts(cpp_content)
         info.num_params = self._extract_numparams(cpp_content)
+
+        # Extract input names
+        info.input_names = self._extract_input_names(cpp_content)
 
         # Detect buffers
         info.buffers = self._detect_buffers(cpp_content)
@@ -207,6 +218,19 @@ class GenExportParser:
         if match:
             return int(match.group(1))
         return 0
+
+    def _extract_input_names(self, content: str) -> list[str]:
+        """Extract signal input names from gen_kernel_innames[].
+
+        Parses: const char *gen_kernel_innames[] = { "carrier", "c/m ratio" };
+        Returns: ["carrier", "c/m ratio"]
+        """
+        match = self.INNAMES_PATTERN.search(content)
+        if not match:
+            return []
+        raw = match.group(1)
+        # Extract quoted strings
+        return re.findall(r'"([^"]*)"', raw)
 
     def _detect_buffers(self, content: str) -> list[str]:
         """

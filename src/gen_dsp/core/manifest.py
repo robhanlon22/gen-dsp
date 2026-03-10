@@ -54,6 +54,36 @@ class ParamInfo:
 
 
 @dataclass
+class RemappedInput:
+    """A signal input remapped to a parameter.
+
+    When gen~ exports use signal-rate ``in`` objects for control data
+    (e.g., pitch, gate), ``--inputs-as-params`` converts them to plugin
+    parameters. The gen~ perform function still receives input buffers
+    -- the bridge fills them with the parameter value each block.
+    """
+
+    gen_input_index: int  # original index in gen~'s input array
+    input_name: str       # name from gen_kernel_innames[]
+    param_index: int      # index in the expanded param list
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "gen_input_index": self.gen_input_index,
+            "input_name": self.input_name,
+            "param_index": self.param_index,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "RemappedInput":
+        return cls(
+            gen_input_index=d["gen_input_index"],
+            input_name=d["input_name"],
+            param_index=d["param_index"],
+        )
+
+
+@dataclass
 class Manifest:
     """Front-end-agnostic intermediate representation for platform backends."""
 
@@ -62,6 +92,7 @@ class Manifest:
     num_outputs: int
     params: list[ParamInfo] = field(default_factory=list)
     buffers: list[str] = field(default_factory=list)
+    remapped_inputs: list[RemappedInput] = field(default_factory=list)
     source: str = "gen~"
     version: str = "0.8.0"
 
@@ -70,7 +101,7 @@ class Manifest:
         return len(self.params)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "gen_name": self.gen_name,
             "num_inputs": self.num_inputs,
             "num_outputs": self.num_outputs,
@@ -79,6 +110,9 @@ class Manifest:
             "source": self.source,
             "version": self.version,
         }
+        if self.remapped_inputs:
+            d["remapped_inputs"] = [r.to_dict() for r in self.remapped_inputs]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Manifest":
@@ -88,6 +122,9 @@ class Manifest:
             num_outputs=d["num_outputs"],
             params=[ParamInfo.from_dict(p) for p in d.get("params", [])],
             buffers=d.get("buffers", []),
+            remapped_inputs=[
+                RemappedInput.from_dict(r) for r in d.get("remapped_inputs", [])
+            ],
             source=d.get("source", "gen~"),
             version=d.get("version", "0.8.0"),
         )
@@ -218,3 +255,176 @@ def manifest_from_export_info(
         source="gen~",
         version=version,
     )
+
+
+# ---------------------------------------------------------------------------
+# Input-to-parameter remapping
+# ---------------------------------------------------------------------------
+
+
+def _sanitize_input_name(name: str) -> str:
+    """Convert an input name to a valid C identifier for use as a param name.
+
+    E.g. "c/m ratio" -> "c_m_ratio"
+    """
+    result = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    # Collapse multiple underscores
+    result = re.sub(r"_+", "_", result).strip("_")
+    if not result or not result[0].isalpha():
+        result = "input_" + result
+    return result
+
+
+def apply_inputs_as_params(
+    manifest: Manifest,
+    input_names: list[str],
+    remap_names: list[str] | None = None,
+) -> Manifest:
+    """Remap signal inputs to parameters.
+
+    When ``remap_names`` is None (bare ``--inputs-as-params``), all signal
+    inputs are remapped. When a list is given, only those named inputs are
+    remapped.
+
+    The returned manifest has reduced ``num_inputs`` and extra ``ParamInfo``
+    entries appended for each remapped input. The ``remapped_inputs`` list
+    records the mapping from gen~ input index to param index.
+
+    Args:
+        manifest: Original manifest with gen~'s real I/O counts.
+        input_names: Input names from ``ExportInfo.input_names``.
+        remap_names: Subset of input names to remap, or None for all.
+
+    Returns:
+        New Manifest with remapped inputs applied.
+
+    Raises:
+        ValueError: If a requested name is not in ``input_names``.
+    """
+    if not input_names:
+        raise ValueError(
+            "No input names found in gen~ export (gen_kernel_innames). "
+            "Cannot remap inputs to parameters."
+        )
+
+    # Determine which inputs to remap
+    if remap_names is None:
+        # Remap all
+        indices_to_remap = list(range(len(input_names)))
+    else:
+        indices_to_remap = []
+        for rname in remap_names:
+            try:
+                idx = input_names.index(rname)
+            except ValueError:
+                raise ValueError(
+                    f"Input name '{rname}' not found. "
+                    f"Available input names: {input_names}"
+                )
+            indices_to_remap.append(idx)
+
+    if not indices_to_remap:
+        return manifest
+
+    # Build new params list (copy existing, then append synthetic ones)
+    new_params = list(manifest.params)
+    remapped: list[RemappedInput] = []
+    next_param_idx = len(new_params)
+
+    for gen_idx in indices_to_remap:
+        name = input_names[gen_idx]
+        param_name = _sanitize_input_name(name)
+        new_params.append(
+            ParamInfo(
+                index=next_param_idx,
+                name=param_name,
+                has_minmax=False,
+                min=0.0,
+                max=1.0,
+                default=0.0,
+            )
+        )
+        remapped.append(
+            RemappedInput(
+                gen_input_index=gen_idx,
+                input_name=name,
+                param_index=next_param_idx,
+            )
+        )
+        next_param_idx += 1
+
+    new_num_inputs = manifest.num_inputs - len(indices_to_remap)
+
+    return Manifest(
+        gen_name=manifest.gen_name,
+        num_inputs=new_num_inputs,
+        num_outputs=manifest.num_outputs,
+        params=new_params,
+        buffers=list(manifest.buffers),
+        remapped_inputs=remapped,
+        source=manifest.source,
+        version=manifest.version,
+    )
+
+
+def _build_remap_defs(manifest: Manifest) -> list[str]:
+    """Return raw KEY=VALUE define pairs for input-to-parameter remapping.
+
+    Returns an empty list if no inputs are remapped.
+    """
+    if not manifest.remapped_inputs:
+        return []
+
+    # Total gen~ inputs (before remapping) = current num_inputs + remap count
+    gen_total = manifest.num_inputs + len(manifest.remapped_inputs)
+
+    defs = [
+        f"REMAP_INPUT_COUNT={len(manifest.remapped_inputs)}",
+        f"REMAP_GEN_TOTAL_INPUTS={gen_total}",
+    ]
+    for i, ri in enumerate(manifest.remapped_inputs):
+        defs.append(f"REMAP_INPUT_{i}_GEN_IDX={ri.gen_input_index}")
+        defs.append(f"REMAP_INPUT_{i}_PARAM_IDX={ri.param_index}")
+        # Escape the name for a C string literal in a compile define
+        escaped = ri.input_name.replace("\\", "\\\\").replace('"', '\\"')
+        defs.append(f'REMAP_INPUT_{i}_NAME="{escaped}"')
+
+    return defs
+
+
+def build_remap_defines(manifest: Manifest) -> str:
+    """Build CMake compile definition lines for input-to-parameter remapping.
+
+    Returns an empty string if no inputs are remapped, or newline+indent
+    separated definition strings suitable for CMake target_compile_definitions().
+
+    Follows the same pattern as ``build_midi_defines()`` in ``midi.py``.
+    """
+    defs = _build_remap_defs(manifest)
+    if not defs:
+        return ""
+    return "\n    ".join(defs)
+
+
+def build_remap_defines_make(
+    manifest: Manifest,
+    flag_vars: str | list[str] = "FLAGS",
+) -> str:
+    """Build Make-style compile flags for input-to-parameter remapping.
+
+    Returns an empty string if no inputs are remapped, or newline-separated
+    ``FLAG_VAR += -DKEY=VALUE`` lines suitable for Makefile templates.
+
+    ``flag_vars`` can be a single variable name or a list (e.g. ``["CFLAGS", "CPPFLAGS"]``)
+    to emit defines for multiple flag variables.
+    """
+    defs = _build_remap_defs(manifest)
+    if not defs:
+        return ""
+    if isinstance(flag_vars, str):
+        flag_vars = [flag_vars]
+    lines = []
+    for var in flag_vars:
+        for d in defs:
+            lines.append(f"{var} += -D{d}")
+    return "\n".join(lines)

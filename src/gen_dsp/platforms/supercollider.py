@@ -17,7 +17,7 @@ from pathlib import Path
 from string import Template
 from typing import Optional
 
-from gen_dsp.core.manifest import Manifest, ParamInfo
+from gen_dsp.core.manifest import Manifest, ParamInfo, build_remap_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import ProjectError
 from gen_dsp.platforms.cmake_platform import CMakePlatform
@@ -61,6 +61,7 @@ class SuperColliderPlatform(CMakePlatform):
                 shutil.copy2(src, output_dir / filename)
 
         self.generate_ext_header(output_dir, "sc")
+        self.copy_remap_header(output_dir)
 
         # UGen name (first letter capitalized, required by SC)
         ugen_name = self._capitalize_name(lib_name)
@@ -79,6 +80,9 @@ class SuperColliderPlatform(CMakePlatform):
         # Resolve shared cache settings
         use_shared_cache, cache_dir = self.resolve_shared_cache(config)
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines(manifest)
+
         # Generate CMakeLists.txt
         self._generate_cmakelists(
             templates_dir / "CMakeLists.txt.template",
@@ -91,6 +95,7 @@ class SuperColliderPlatform(CMakePlatform):
             manifest.num_params,
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -227,6 +232,7 @@ class SuperColliderPlatform(CMakePlatform):
         num_params: int,
         use_shared_cache: str = "OFF",
         cache_dir: str = "",
+        remap_defines: str = "",
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
@@ -244,6 +250,7 @@ class SuperColliderPlatform(CMakePlatform):
             num_params=num_params,
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
+            remap_defines=remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 

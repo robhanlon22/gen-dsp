@@ -83,6 +83,7 @@ target_compile_definitions($${PROJECT_NAME} PRIVATE
     VST3_FUID_2=$fuid_2
     VST3_FUID_3=$fuid_3
     $midi_defines
+    $remap_defines
 )
 
 # Include directories

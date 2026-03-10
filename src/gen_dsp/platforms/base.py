@@ -196,6 +196,19 @@ class Platform(ABC):
         if src.exists():
             shutil.copy2(src, output_dir / "voice_alloc.h")
 
+    def copy_remap_header(self, output_dir: Path) -> None:
+        """Copy gen_remap_inputs.h to output_dir.
+
+        This header is always included by _ext_*.cpp bridges but compiles to
+        nothing unless REMAP_INPUT_COUNT is defined, so it is safe to copy
+        unconditionally.
+        """
+        from gen_dsp.templates import get_templates_dir
+
+        src = get_templates_dir("shared") / "gen_remap_inputs.h"
+        if src.exists():
+            shutil.copy2(src, output_dir / "gen_remap_inputs.h")
+
     def generate_ext_header(self, output_dir: Path, platform_key: str) -> None:
         """Generate the standard _ext_{platform}.h header from shared template.
 

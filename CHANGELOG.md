@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--inputs-as-params`** -- New CLI flag to remap gen~ signal inputs to plugin parameters. In gen~, all external inputs are signal-rate `in` objects with no distinction between audio and control data. This flag intercepts specified inputs and exposes them as host-visible parameters instead, allowing patches like `fm_bells` (where `in 1`/`in 2` are pitch/ratio, not audio) to be classified as instruments/generators rather than effects. Two forms: bare `--inputs-as-params` (remap all inputs) or `--inputs-as-params carrier "c/m ratio"` (remap specific inputs by name from `gen_kernel_innames[]`). Supported on all 11 platforms. See [docs/inputs_as_params.md](docs/inputs_as_params.md).
+- **Parser: input name extraction** -- `ExportInfo` now includes `input_names` parsed from `gen_kernel_innames[]` in gen~ exports, enabling name-based input remapping.
 - **gen~ export examples** -- Two example gen~ exports in `examples/gen_export/`: `fm_bells` (2in/2out stereo effect, 3 params, no buffers) and `slicer` (1in/1out mono effect with `Data` member buffer).
 - **`gen-export-examples` Makefile targets** -- New targets to build example exports for all platforms: `gen-export-<name>-<platform>` for individual combos (e.g. `make gen-export-slicer-clap`), `gen-export-<name>` for all platforms per export, and `gen-export-examples` for the full matrix (2 exports x 11 platforms). Buffer flags applied automatically per export.
 - **Parser tests for example exports** -- Test coverage for `fm_bells` and `slicer` parsing, including `Data` member buffer detection.

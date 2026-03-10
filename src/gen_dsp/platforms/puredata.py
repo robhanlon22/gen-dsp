@@ -9,7 +9,7 @@ from string import Template
 from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
-from gen_dsp.core.manifest import Manifest
+from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
@@ -63,6 +63,8 @@ class PureDataPlatform(Platform):
             if src.exists():
                 shutil.copy2(src, output_dir / filename)
 
+        self.copy_remap_header(output_dir)
+
         # Copy bundled m_pd.h
         pd_include_dst = output_dir / "pd-include"
         pd_include_dst.mkdir(exist_ok=True)
@@ -78,12 +80,16 @@ class PureDataPlatform(Platform):
                 shutil.rmtree(pd_lib_builder_dst)
             shutil.copytree(pd_lib_builder_src, pd_lib_builder_dst)
 
+        # Build input remap compile definitions
+        remap_defines = build_remap_defines_make(manifest, "cflags")
+
         # Generate Makefile
         self._generate_makefile(
             templates_dir / "Makefile.template",
             output_dir / "Makefile",
             manifest.gen_name,
             lib_name,
+            remap_defines=remap_defines,
         )
 
         # Generate gen_buffer.h using base class method
@@ -99,6 +105,7 @@ class PureDataPlatform(Platform):
         output_path: Path,
         gen_name: str,
         lib_name: str,
+        remap_defines: str = "",
     ) -> None:
         """Generate Makefile from template."""
         if template_path.exists():
@@ -108,6 +115,7 @@ class PureDataPlatform(Platform):
                 gen_name=gen_name,
                 lib_name=lib_name,
                 genext_version=self.GENEXT_VERSION,
+                remap_defines=remap_defines,
             )
         else:
             # Fallback: generate directly

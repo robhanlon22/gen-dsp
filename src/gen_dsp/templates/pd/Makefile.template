@@ -11,6 +11,7 @@ gendsp.version = $genext_version
 $$(lib.name)~.class.sources = gen_dsp.cpp _ext.cpp ./gen/gen_dsp/genlib.cpp
 cflags = -I ./gen -I./gen/gen_dsp -DGEN_EXT_VERSION=$$(gendsp.version) -DPD_EXT_NAME=$$(lib.name) -DGEN_EXPORTED_NAME=$$(gen.name) -DGEN_EXPORTED_HEADER=\"$$(gen.name).h\" -DGEN_EXPORTED_CPP=\"$$(gen.name).cpp\"
 suppress-wunused = yes
+$remap_defines
 
 define forDarwin
   cflags += -DMSP_ON_CLANG -DGENLIB_USE_FLOAT32 -mmacosx-version-min=10.9

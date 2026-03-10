@@ -46,3 +46,4 @@ CPPFLAGS += -DDAISY_NUM_INPUTS=$num_inputs
 CPPFLAGS += -DDAISY_NUM_OUTPUTS=$num_outputs
 CPPFLAGS += -DDAISY_NUM_PARAMS=$num_params
 CPPFLAGS += -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter
+$remap_defines

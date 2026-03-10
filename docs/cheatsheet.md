@@ -25,6 +25,7 @@ Source type is auto-detected: directory (gen~ export), `.gdsp` file, or `.json` 
 | `--midi-vel NAME` | MIDI velocity parameter name |
 | `--midi-freq-unit {hz,midi}` | Unit for MIDI frequency parameter |
 | `--voices N` | Polyphony voices (default: 1) |
+| `--inputs-as-params [NAME ...]` | Remap signal inputs to parameters (no names = all; with names = only those) |
 
 Examples:
 
