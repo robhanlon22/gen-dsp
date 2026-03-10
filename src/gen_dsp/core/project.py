@@ -225,7 +225,9 @@ class ProjectGenerator:
         if self.config.inputs_as_params is not None:
             from gen_dsp.core.manifest import apply_inputs_as_params
 
-            remap_names = self.config.inputs_as_params if self.config.inputs_as_params else None
+            remap_names = (
+                self.config.inputs_as_params if self.config.inputs_as_params else None
+            )
             manifest = apply_inputs_as_params(
                 manifest, self.export_info.input_names, remap_names
             )

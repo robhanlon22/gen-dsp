@@ -1009,9 +1009,7 @@ class CirclePlatform(Platform):
         default_circle_dir = str(_get_default_circle_dir())
 
         # Build input remap compile definitions (both CFLAGS and CPPFLAGS)
-        remap_defines = build_remap_defines_make(
-            manifest, ["CFLAGS", "CPPFLAGS"]
-        )
+        remap_defines = build_remap_defines_make(manifest, ["CFLAGS", "CPPFLAGS"])
 
         # Generate Makefile from template
         self._generate_makefile(

@@ -68,10 +68,6 @@ def detect_midi_mapping(
     """
     disabled = MidiMapping(enabled=False)
 
-    # Effects never get MIDI
-    if manifest.num_inputs > 0:
-        return disabled
-
     # Explicit opt-out
     if no_midi:
         return disabled
@@ -79,7 +75,8 @@ def detect_midi_mapping(
     # Build name->index lookup
     param_by_name: dict[str, int] = {p.name: p.index for p in manifest.params}
 
-    # Check for explicit overrides
+    # Check for explicit overrides -- these bypass the num_inputs guard
+    # because the user knows their patch topology better than auto-detection
     has_explicit = (
         midi_gate is not None or midi_freq is not None or midi_vel is not None
     )
@@ -95,6 +92,11 @@ def detect_midi_mapping(
             vel_idx=vel_idx,
             freq_unit=midi_freq_unit,
         )
+
+    # Auto-detection only applies to generators (0 inputs).
+    # Effects (num_inputs > 0) require explicit --midi-* flags.
+    if manifest.num_inputs > 0:
+        return disabled
 
     # Auto-detection: scan param names
     gate_idx = _find_param_index(param_by_name, _GATE_NAMES)

@@ -76,7 +76,7 @@ class GenExportParser:
 
     # Pattern for input names: const char *gen_kernel_innames[] = { "carrier", "c/m ratio" };
     INNAMES_PATTERN = re.compile(
-        r'(?:const\s+)?char\s*\*\s*gen_kernel_innames\s*\[\s*\]\s*=\s*\{([^}]+)\}'
+        r"(?:const\s+)?char\s*\*\s*gen_kernel_innames\s*\[\s*\]\s*=\s*\{([^}]+)\}"
     )
 
     # Pattern for exp2f issue

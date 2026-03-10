@@ -64,8 +64,8 @@ class RemappedInput:
     """
 
     gen_input_index: int  # original index in gen~'s input array
-    input_name: str       # name from gen_kernel_innames[]
-    param_index: int      # index in the expanded param list
+    input_name: str  # name from gen_kernel_innames[]
+    param_index: int  # index in the expanded param list
 
     def to_dict(self) -> dict[str, Any]:
         return {

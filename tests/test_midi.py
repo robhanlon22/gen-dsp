@@ -202,10 +202,16 @@ class TestMidiExplicitOverrides:
         assert result.gate_idx is None
 
     def test_explicit_overrides_on_effect(self):
-        """Explicit flags still disable for effects (num_inputs > 0)."""
+        """Explicit --midi-* flags enable MIDI even for effects (num_inputs > 0).
+
+        The user knows their patch topology -- if they explicitly request MIDI
+        on an effect, the num_inputs guard should not silently disable it.
+        See https://github.com/shakfu/gen-dsp/issues/2
+        """
         manifest = _make_manifest(2, [_param(0, "gate")])
         result = detect_midi_mapping(manifest, midi_gate="gate")
-        assert not result.enabled
+        assert result.enabled
+        assert result.gate_idx == 0
 
     def test_freq_unit_midi(self):
         """midi_freq_unit='midi' passes through."""

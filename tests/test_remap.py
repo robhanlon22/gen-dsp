@@ -19,6 +19,7 @@ from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def fm_bells_export() -> Path:
     """Path to the fm_bells gen~ export (2 signal inputs used as control data)."""
@@ -36,9 +37,15 @@ def base_manifest() -> Manifest:
         num_inputs=2,
         num_outputs=2,
         params=[
-            ParamInfo(index=0, name="depth", has_minmax=True, min=0.0, max=1.0, default=0.5),
-            ParamInfo(index=1, name="t60", has_minmax=True, min=0.0, max=10.0, default=2.0),
-            ParamInfo(index=2, name="smooth", has_minmax=True, min=0.0, max=1.0, default=0.1),
+            ParamInfo(
+                index=0, name="depth", has_minmax=True, min=0.0, max=1.0, default=0.5
+            ),
+            ParamInfo(
+                index=1, name="t60", has_minmax=True, min=0.0, max=10.0, default=2.0
+            ),
+            ParamInfo(
+                index=2, name="smooth", has_minmax=True, min=0.0, max=1.0, default=0.1
+            ),
         ],
     )
 
@@ -46,6 +53,7 @@ def base_manifest() -> Manifest:
 # ---------------------------------------------------------------------------
 # Parser: input_names extraction
 # ---------------------------------------------------------------------------
+
 
 class TestParserInputNames:
     """Test extraction of gen_kernel_innames from exported code."""
@@ -78,6 +86,7 @@ class TestParserInputNames:
 # apply_inputs_as_params
 # ---------------------------------------------------------------------------
 
+
 class TestApplyInputsAsParams:
     """Test the core remap logic."""
 
@@ -98,7 +107,9 @@ class TestApplyInputsAsParams:
     def test_remap_specific_inputs(self, base_manifest):
         """Remap only 'carrier', leave 'c/m ratio' as audio input."""
         input_names = ["carrier", "c/m ratio"]
-        result = apply_inputs_as_params(base_manifest, input_names, remap_names=["carrier"])
+        result = apply_inputs_as_params(
+            base_manifest, input_names, remap_names=["carrier"]
+        )
 
         # Only 1 input remapped -> num_inputs goes from 2 to 1
         assert result.num_inputs == 1
@@ -143,7 +154,9 @@ class TestApplyInputsAsParams:
         """Requesting remap of a non-existent input name should raise."""
         input_names = ["carrier", "c/m ratio"]
         with pytest.raises(ValueError, match="not_a_real_input"):
-            apply_inputs_as_params(base_manifest, input_names, remap_names=["not_a_real_input"])
+            apply_inputs_as_params(
+                base_manifest, input_names, remap_names=["not_a_real_input"]
+            )
 
     def test_remap_zero_input_manifest_raises(self):
         """Remapping on a generator (0 inputs, no input names) should raise."""
@@ -160,6 +173,7 @@ class TestApplyInputsAsParams:
 # ---------------------------------------------------------------------------
 # build_remap_defines (CMake format)
 # ---------------------------------------------------------------------------
+
 
 class TestBuildRemapDefines:
     """Test CMake-format remap define generation."""
@@ -198,6 +212,7 @@ class TestBuildRemapDefines:
 # build_remap_defines_make (Makefile format)
 # ---------------------------------------------------------------------------
 
+
 class TestBuildRemapDefinesMake:
     """Test Make-format remap define generation."""
 
@@ -231,7 +246,9 @@ class TestBuildRemapDefinesMake:
     def test_make_format_no_trailing_newline(self, base_manifest):
         """Make format should not have trailing newline."""
         input_names = ["carrier"]
-        remapped = apply_inputs_as_params(base_manifest, input_names, remap_names=["carrier"])
+        remapped = apply_inputs_as_params(
+            base_manifest, input_names, remap_names=["carrier"]
+        )
 
         result = build_remap_defines_make(remapped, "FLAGS")
         assert not result.endswith("\n")
@@ -240,6 +257,7 @@ class TestBuildRemapDefinesMake:
 # ---------------------------------------------------------------------------
 # Manifest serialization round-trip with remapped_inputs
 # ---------------------------------------------------------------------------
+
 
 class TestRemapSerialization:
     """Test that remapped manifests survive to_dict/from_dict round-trip."""
@@ -263,6 +281,7 @@ class TestRemapSerialization:
 # ---------------------------------------------------------------------------
 # Platform project generation with remap
 # ---------------------------------------------------------------------------
+
 
 class TestRemapProjectGeneration:
     """Test that remap defines propagate into generated build files."""
