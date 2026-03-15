@@ -144,6 +144,7 @@ private:
     };
     ParamRange mParamRanges[128];
     int mNumParams;
+    bool mInitialized;
 };
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,7 @@ GenVst3Plugin::GenVst3Plugin()
 #endif
     , mMaxFrames(1024)
     , mNumParams(0)
+    , mInitialized(false)
 {
     memset(mParamRanges, 0, sizeof(mParamRanges));
 #if NUM_VOICES > 1
@@ -178,8 +180,10 @@ GenVst3Plugin::~GenVst3Plugin() {
 }
 
 tresult PLUGIN_API GenVst3Plugin::initialize(FUnknown* context) {
+    if (mInitialized) return kResultOk;
     tresult result = SingleComponentEffect::initialize(context);
     if (result != kResultOk) return result;
+    mInitialized = true;
 
     // Build speaker arrangements matching gen~ channel counts
     auto speakerArrForCount = [](int n) -> SpeakerArrangement {
@@ -286,6 +290,7 @@ tresult PLUGIN_API GenVst3Plugin::terminate() {
         mGenState = nullptr;
     }
 #endif
+    mInitialized = false;
     return SingleComponentEffect::terminate();
 }
 

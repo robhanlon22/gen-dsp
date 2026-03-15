@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **VST3: guard against duplicate `initialize()` calls** -- Added `mInitialized` flag to `GenVst3Plugin` to prevent double-initialization when hosts call `initialize()` more than once. Fixes compatibility with Elk Audio's Sushi host, which calls `initialize()` twice. Without this guard, the second call would re-add buses and re-register parameters, causing errors. Thanks to [@nyboer](https://github.com/nyboer) for reporting. ([#4](https://github.com/shakfu/gen-dsp/issues/4))
+
 ## [0.1.17]
 
 ### Added
