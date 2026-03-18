@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **mkdocs documentation site** -- Added [mkdocs-material](https://squidfunk.github.io/mkdocs-material/) documentation with [mkdocstrings](https://mkdocstrings.github.io/) for auto-generated API reference from Python docstrings. Covers all 15 platform backends, core modules (parser, manifest, project, builder, patcher, cache, MIDI), platform base classes, error hierarchy, and the full graph frontend (models, compile, validate, optimize, simulate, algebra, adapter). New Makefile targets: `docs-build`, `docs-serve`, `docs-deploy`. Published at <https://shakfu.github.io/gen-dsp/>.
+
 ## [0.1.18]
 
 ### Added
