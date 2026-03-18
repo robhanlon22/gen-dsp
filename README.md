@@ -2,7 +2,7 @@
 
 **[Documentation](https://shakfu.github.io/gen-dsp/)** | **[API Reference](https://shakfu.github.io/gen-dsp/api/)** | **[Changelog](https://github.com/shakfu/gen-dsp/blob/master/CHANGELOG.md)**
 
-gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting PureData, Max/MSP, ChucK, AudioUnit (AUv2), CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, Circle, and Web Audio (WASM). It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
+gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting 15 platforms: PureData, Max/MSP, ChucK, AudioUnit (AUv2), AUv3, CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, Circle, Web Audio (WASM), Standalone (miniaudio), and Csound. It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
 
 gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python, JSON, or the purpose-built **GDSP DSL** (`.gdsp` files) and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right. The companion [dsp-graph](https://github.com/shakfu/dsp-graph) project provides a web-based visual graph editor and debugger (React + FastAPI) built on top of gen-dsp's `graph` backend.
 
@@ -17,7 +17,8 @@ gen-dsp builds on macOS, Linux, and Windows. All platforms are tested in CI via 
 | PureData | yes | yes | -- | make (pd-lib-builder) | `.pd_darwin` / `.pd_linux` |
 | Max/MSP | yes | -- | -- | CMake (max-sdk-base) | `.mxo` / `.mxe64` |
 | ChucK | yes | yes | -- | make | `.chug` |
-| AudioUnit | yes | -- | -- | CMake | `.component` |
+| AudioUnit (AUv2) | yes | -- | -- | CMake | `.component` |
+| AUv3 | yes | -- | -- | CMake (Xcode) | `.app` + `.appex` |
 | CLAP | yes | yes | yes | CMake (FetchContent) | `.clap` |
 | VST3 | yes | yes | yes | CMake (FetchContent) | `.vst3` |
 | LV2 | yes | yes | -- | CMake (FetchContent) | `.lv2` |
@@ -26,6 +27,8 @@ gen-dsp builds on macOS, Linux, and Windows. All platforms are tested in CI via 
 | Daisy | -- | yes | -- | make (libDaisy) | `.bin` (firmware) |
 | Circle | -- | yes | -- | make (Circle SDK) | `.img` (kernel image) |
 | Web Audio | yes | yes | yes | make (Emscripten) | `.wasm` + `processor.js` |
+| Standalone | yes | yes | yes | make (miniaudio) | native executable |
+| Csound | yes | yes | -- | make | `.dylib` / `.so` opcode |
 
 Each platform has a detailed guide covering prerequisites, build details, SDK configuration, install paths, and troubleshooting:
 
@@ -35,6 +38,7 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 | Max/MSP | [docs/backends/max.md](docs/backends/max.md) |
 | ChucK | [docs/backends/chuck.md](docs/backends/chuck.md) |
 | AudioUnit (AUv2) | [docs/backends/audiounit.md](docs/backends/audiounit.md) |
+| AUv3 | [docs/backends/auv3.md](docs/backends/auv3.md) |
 | CLAP | [docs/backends/clap.md](docs/backends/clap.md) |
 | VST3 | [docs/backends/vst3.md](docs/backends/vst3.md) |
 | LV2 | [docs/backends/lv2.md](docs/backends/lv2.md) |
@@ -43,6 +47,8 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 | Daisy | [docs/backends/daisy.md](docs/backends/daisy.md) |
 | Circle | [docs/backends/circle.md](docs/backends/circle.md) |
 | Web Audio | [docs/backends/webaudio.md](docs/backends/webaudio.md) |
+| Standalone | [docs/backends/standalone.md](docs/backends/standalone.md) |
+| Csound | [docs/backends/csound.md](docs/backends/csound.md) |
 
 ## Key Improvements and Features
 
@@ -73,6 +79,12 @@ Each platform has a detailed guide covering prerequisites, build details, SDK co
 - **Circle support**: Generates bare-metal Raspberry Pi kernel images (.img) for Pi Zero through Pi 5 using the [Circle](https://github.com/rsta2/circle) framework -- 14 board variants covering I2S, PWM, HDMI, and USB audio outputs. Supports multi-plugin mode via `--graph` with USB MIDI CC parameter control: linear chains use an optimized ping-pong buffer codegen path, while arbitrary DAGs (fan-out, fan-in via mixer nodes) use topological sort with per-edge buffer allocation.
 
 - **Web Audio support**: Generates browser-ready AudioWorklet + WASM modules from gen~ exports or graph sources. Emscripten compiles C++ to WebAssembly; the generated `processor.js` runs DSP in a real-time audio thread via `AudioWorkletProcessor`. Includes a demo page (`index.html`) with parameter sliders and a `make serve` target for local testing.
+
+- **Standalone support**: Generates self-contained CLI audio applications using [miniaudio](https://miniaud.io/) (public domain, single-header, zero-dependency). Processes real-time audio from system default I/O devices with CLI parameter control. Cross-platform: macOS, Linux, Windows.
+
+- **AUv3 support**: Generates macOS AUv3 plugins as App Extensions (`.appex` inside `.app`) using `cmake -G Xcode`. Implements `AUAudioUnit` subclass with `AUParameterTree` and realtime-safe `internalRenderBlock`.
+
+- **Csound support**: Generates Csound opcode plugins via the `csdl.h` C API. Audio inputs map to a-rate args, parameters to k-rate args. Handles float-to-MYFLT conversion with sample-accurate timing.
 
 - **Platform-specific patches**: Automatically fixes compatibility issues like the `exp2f -> exp2` problem in Max 9 exports on macOS.
 
@@ -140,7 +152,7 @@ The source type is auto-detected:
 
 Options:
 
-- `-p, --platform` - Target platform (required): `pd`, `max`, `chuck`, `au`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`, `webaudio`
+- `-p, --platform` - Target platform (required): `pd`, `max`, `chuck`, `au`, `auv3`, `clap`, `vst3`, `lv2`, `sc`, `vcvrack`, `daisy`, `circle`, `webaudio`, `standalone`, `csound`
 - `-n, --name` - Name for the plugin (default: inferred from source)
 - `-o, --output` - Output directory (default: `./<name>_<platform>`)
 - `--no-build` - Skip building after project creation
@@ -354,7 +366,7 @@ gen-dsp ./fm_bells -p clap --inputs-as-params
 gen-dsp ./fm_bells -p clap --inputs-as-params carrier "c/m ratio"
 ```
 
-This turns a 2-input effect into a 0-input generator/instrument with 2 additional parameters. Works on all 11 platforms. See [docs/inputs_as_params.md](docs/inputs_as_params.md) for details.
+This turns a 2-input effect into a 0-input generator/instrument with 2 additional parameters. Works on all 15 platforms. See [docs/inputs_as_params.md](docs/inputs_as_params.md) for details.
 
 ### Automatic Buffer Detection
 
@@ -587,6 +599,43 @@ gen-dsp fm_synth.gdsp -p webaudio
 cd fm_synth_webaudio && make serve
 ```
 
+## Standalone
+
+See the [Standalone guide](docs/backends/standalone.md) for full details.
+
+```bash
+gen-dsp ./my_export -p standalone
+cd myeffect_standalone && make all
+./myeffect -l              # list parameters
+./myeffect -p revtime 0.8  # run with parameter
+```
+
+Cross-platform CLI audio application using [miniaudio](https://miniaud.io/). Processes real-time audio from the system default input/output. Parameters set via `-p <name> <value>` flags. miniaudio.h downloaded at build time (no bundled dependency).
+
+## AUv3
+
+See the [AUv3 guide](docs/backends/auv3.md) for full details.
+
+```bash
+gen-dsp ./my_export -p auv3
+cd myeffect_auv3
+cmake -G Xcode -B build && cmake --build build --config Release
+```
+
+macOS only. Generates an App Extension (`.appex`) inside a host app (`.app`). Requires Xcode (for the CMake Xcode generator). Run the host app once to register the AUv3 with PluginKit for discovery by DAWs.
+
+## Csound
+
+See the [Csound guide](docs/backends/csound.md) for full details.
+
+```bash
+gen-dsp ./my_export -p csound
+cd myeffect_csound && make all
+# Usage in .csd: aout1, aout2 myeffect ain1, ain2, kparam1, kparam2, ...
+```
+
+Generates Csound opcode plugins. Audio inputs map to a-rate args, parameters to k-rate args. Install the built `lib*.dylib`/`.so` to `OPCODE6DIR64` for Csound to discover it.
+
 ## Shared FetchContent Cache
 
 CLAP, VST3, LV2, and SC backends use CMake FetchContent to download their SDKs/headers at configure time. By default, gen-dsp bakes an OS-appropriate shared cache path into the generated CMakeLists.txt so that multiple projects share a single SDK download. Pass `--no-shared-cache` to disable this and use CMake's default project-local `build/_deps/` instead.
@@ -625,6 +674,9 @@ The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` a
 - Daisy: requires `arm-none-eabi-gcc` cross-compiler; first clone of libDaisy requires network access and `git`; v1 targets Daisy Seed only (no board-specific knob/CV mapping)
 - Circle: requires `aarch64-none-elf-gcc` (or `arm-none-eabi-gcc` for Pi Zero) cross-compiler; first clone of Circle SDK requires network access and `git`; output-only (no audio input capture); single-plugin mode requires manual GPIO/ADC code for parameter control; multi-plugin mode (`--graph`) supports linear chains and arbitrary DAGs (fan-out, fan-in via mixer nodes) but no buffers
 - Web Audio: requires Emscripten SDK (`emcc` on PATH); buffer loading not yet supported (browser file I/O is async/platform-specific)
+- Standalone: requires curl (for miniaudio.h download on first build)
+- AUv3: macOS only; requires full Xcode (not just Command Line Tools) for the CMake Xcode generator; host app must be run once to register the extension with PluginKit
+- Csound: requires Csound headers (`csdl.h`); MYFLT is double in Csound 6/7, so there is a float-to-double conversion cost per sample
 - Graph frontend: requires pydantic >= 2.0; simulation additionally requires numpy >= 1.24; Daisy, Circle, and VCV Rack platforms not yet supported for graph sources
 
 ## Requirements
@@ -711,6 +763,24 @@ The development Makefile exports `GEN_DSP_CACHE_DIR=build/.fetchcontent_cache` a
 - Emscripten SDK ([emsdk](https://emscripten.org/docs/getting_started/downloads.html) -- `emcc` on PATH)
 - Python 3 (for `make serve` demo server)
 
+### Standalone builds
+
+- make
+- C/C++ compiler
+- curl (for downloading miniaudio.h on first build)
+
+### AUv3 builds
+
+- macOS
+- Xcode (full IDE, not just Command Line Tools)
+- CMake >= 3.19
+
+### Csound builds
+
+- make
+- C/C++ compiler
+- Csound headers (`csdl.h`) -- from CsoundLib64.framework (macOS) or `libcsound64-dev` (Linux)
+
 ### macOS
 
 Install Xcode or Command Line Tools:
@@ -735,7 +805,7 @@ make all
 ## Development
 
 ```bash
-git clone https://github.com/samesimilar/gen-dsp.git
+git clone https://github.com/shakfu/gen-dsp.git
 cd gen-dsp
 uv venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
