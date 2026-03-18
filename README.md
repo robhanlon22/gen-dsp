@@ -1,5 +1,7 @@
 # gen-dsp
 
+**[Documentation](https://shakfu.github.io/gen-dsp/)** | **[API Reference](https://shakfu.github.io/gen-dsp/api/)** | **[Changelog](https://github.com/shakfu/gen-dsp/blob/master/CHANGELOG.md)**
+
 gen-dsp is a zero-dependency pure Python package that generates buildable audio plugin projects from Max/MSP gen~ code exports, targeting PureData, Max/MSP, ChucK, AudioUnit (AUv2), CLAP, VST3, LV2, SuperCollider, VCV Rack, Daisy, Circle, and Web Audio (WASM). It handles project scaffolding, I/O and buffer detection, parameter metadata extraction, and platform-specific patching.
 
 gen-dsp also includes an optional **graph** frontend (`pip install gen-dsp[graph]`) that provides a way to test gen-dsp's platform backends without needing to create and export gen~ patches. It defines DSP graphs in Python, JSON, or the purpose-built **GDSP DSL** (`.gdsp` files) and compiles them to the same plugin targets. While not intended to replace gen~, it may evolve into a useful frontend in its own right. The companion [dsp-graph](https://github.com/shakfu/dsp-graph) project provides a web-based visual graph editor and debugger (React + FastAPI) built on top of gen-dsp's `graph` backend.

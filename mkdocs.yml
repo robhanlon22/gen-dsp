@@ -7,9 +7,9 @@ repo_name: shakfu/gen-dsp
 theme:
   name: material
   palette:
-    scheme: slate
-    primary: deep purple
-    accent: amber
+    scheme: default
+    primary: indigo
+    accent: indigo
   features:
     - navigation.sections
     - navigation.expand
@@ -70,6 +70,8 @@ nav:
     - Csound: backends/csound.md
   - Graph Frontend:
     - Overview: graph/README.md
+    - Graph Representation: graph/dsp_graph.md
+    - Pydantic Vocabulary: graph/dsp_pydantic.md
     - API Reference: graph/api.md
     - DSL: graph/dsl.md
     - Coverage: graph/coverage.md
@@ -94,4 +96,6 @@ nav:
       - Simulate: api/graph-simulate.md
       - Algebra: api/graph-algebra.md
       - Adapter: api/graph-adapter.md
+  - Research:
+    - Move Everything: move-everything.md
   - Changelog: changelog.md
