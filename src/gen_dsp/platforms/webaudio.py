@@ -9,7 +9,6 @@ import json
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
@@ -38,12 +37,14 @@ class WebAudioPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate Web Audio project files."""
+        _ = config
         templates_dir = get_webaudio_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Web Audio templates not found at {templates_dir}")
+            msg = f"Web Audio templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -95,7 +96,7 @@ class WebAudioPlatform(Platform):
 
         # Generate _processor.js from template (concatenated with Emscripten
         # glue at build time to produce the final processor.js)
-        param_descriptors, processor_class, num_outputs_array = (
+        param_descriptors, _processor_class, num_outputs_array = (
             self._build_processor_vars(manifest, lib_name)
         )
         export_name = self._make_export_name(lib_name)
@@ -120,7 +121,8 @@ class WebAudioPlatform(Platform):
 
     @staticmethod
     def _make_export_name(lib_name: str) -> str:
-        """Build the Emscripten EXPORT_NAME from lib_name.
+        """
+        Build the Emscripten EXPORT_NAME from lib_name.
 
         E.g. ``"gigaverb"`` -> ``"createGigaverbModule"``.
         """
@@ -135,7 +137,8 @@ class WebAudioPlatform(Platform):
     ) -> None:
         """Render a template file with the given substitutions."""
         if not template_path.exists():
-            raise ProjectError(f"Template not found at {template_path}")
+            msg = f"Template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -146,10 +149,12 @@ class WebAudioPlatform(Platform):
     def _build_processor_vars(
         manifest: Manifest, lib_name: str
     ) -> tuple[list[dict[str, object]], str, str]:
-        """Build shared template variables for processor.js and index.html.
+        """
+        Build shared template variables for processor.js and index.html.
 
         Returns:
             (param_descriptors, processor_class, num_outputs_array)
+
         """
         param_descriptors: list[dict[str, object]] = []
         for param in manifest.params:
@@ -188,7 +193,8 @@ class WebAudioPlatform(Platform):
     ) -> None:
         """Generate the AudioWorkletProcessor JavaScript file."""
         if not template_path.exists():
-            raise ProjectError(f"processor.js template not found at {template_path}")
+            msg = f"processor.js template not found at {template_path}"
+            raise ProjectError(msg)
 
         param_descriptors, processor_class, num_outputs_array = (
             self._build_processor_vars(manifest, lib_name)
@@ -213,13 +219,15 @@ class WebAudioPlatform(Platform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build Web Audio WASM module using make (emcc)."""
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         if clean:
             self.run_command(["make", "clean"], project_dir)
@@ -240,7 +248,7 @@ class WebAudioPlatform(Platform):
         """Clean build artifacts."""
         self.run_command(["make", "clean"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built WASM file."""
         build_dir = project_dir / "build"
         for f in build_dir.glob("*.wasm"):

@@ -8,7 +8,6 @@ import platform as sys_platform
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
@@ -33,7 +32,7 @@ class ChuckPlatform(Platform):
         system = sys_platform.system().lower()
         if system == "darwin":
             return ["make mac"]
-        elif system == "linux":
+        if system == "linux":
             return ["make linux"]
         return ["make mac"]
 
@@ -42,12 +41,14 @@ class ChuckPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate ChucK chugin project files."""
+        _ = config
         templates_dir = get_chuck_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"ChucK templates not found at {templates_dir}")
+            msg = f"ChucK templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -121,20 +122,23 @@ class ChuckPlatform(Platform):
                 remap_defines=remap_defines,
             )
         else:
-            raise ProjectError(f"makefile template not found at {template_path}")
+            msg = f"makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         output_path.write_text(content, encoding="utf-8")
 
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build ChucK chugin using make."""
         makefile = project_dir / "makefile"
         if not makefile.exists():
-            raise BuildError(f"makefile not found in {project_dir}")
+            msg = f"makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         # Clean if requested
         if clean:
@@ -168,7 +172,7 @@ class ChuckPlatform(Platform):
         """Clean build artifacts."""
         self.run_command(["make", "clean"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built chugin file."""
         for f in project_dir.glob("*.chug"):
             return f

@@ -54,8 +54,15 @@ Repository = "https://github.com/shakfu/gen-dsp"
 Changelog = "https://github.com/shakfu/gen-dsp/blob/master/CHANGELOG.md"
 Issues = "https://github.com/shakfu/gen-dsp/issues"
 
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = ["CPY001", "COM812", "D203", "D212", "TC001", "TC002", "TC003"]
+
 [tool.ruff.lint.per-file-ignores]
-"tests/graph/*.py" = ["E402"]
+"tests/**/*.py" = ["S101", "E402"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google" 
 
 [build-system]
 requires = ["uv_build>=0.10.8,<0.11.0"]

@@ -3,15 +3,14 @@
 import shutil
 from pathlib import Path
 
-
 from gen_dsp.core.patcher import Patcher, PatchResult
 
 
 class TestPatcher:
     """Tests for Patcher class."""
 
-    def test_check_patches_needed_no_exp2f(self, gigaverb_export: Path):
-        """Test checking patches when exp2f is not present."""
+    def test_check_patches_needed_no_exp2f(self, gigaverb_export: Path) -> object:
+        """Patch detection should always include exp2f_fix."""
         patcher = Patcher(gigaverb_export)
         needed = patcher.check_patches_needed()
 
@@ -20,8 +19,10 @@ class TestPatcher:
         assert "exp2f_fix" in needed
         assert isinstance(needed["exp2f_fix"], bool)
 
-    def test_apply_exp2f_fix_dry_run(self, gigaverb_export: Path, tmp_path: Path):
-        """Test exp2f fix in dry run mode."""
+    def test_apply_exp2f_fix_dry_run(
+        self, gigaverb_export: Path, tmp_path: Path
+    ) -> object:
+        """Dry-run patch application should report but not modify files."""
         # Copy export to temp dir so we can modify it
         test_export = tmp_path / "test_export"
         shutil.copytree(gigaverb_export, test_export)
@@ -34,20 +35,22 @@ class TestPatcher:
             content = content.replace("exp2(", "exp2f(")
             genlib_ops.write_text(content)
 
-            patcher = Patcher(test_export)
-            result = patcher.apply_exp2f_fix(dry_run=True)
+        patcher = Patcher(test_export)
+        result = patcher.apply_exp2f_fix(dry_run=True)
 
-            if result:
-                assert result.patch_name == "exp2f_fix"
-                assert not result.applied  # Dry run doesn't apply
-                assert "dry run" in result.message.lower() or "Would" in result.message
+        if result:
+            assert result.patch_name == "exp2f_fix"
+            assert not result.applied  # Dry run doesn't apply
+            assert "dry run" in result.message.lower() or "Would" in result.message
 
-                # File should not be modified
-                current_content = genlib_ops.read_text()
-                assert "exp2f(" in current_content
+            # File should not be modified
+            current_content = genlib_ops.read_text()
+            assert "exp2f(" in current_content
 
-    def test_apply_exp2f_fix_actual(self, gigaverb_export: Path, tmp_path: Path):
-        """Test actually applying exp2f fix."""
+    def test_apply_exp2f_fix_actual(
+        self, gigaverb_export: Path, tmp_path: Path
+    ) -> object:
+        """Applying the fix should rewrite exp2f back to exp2."""
         # Copy export to temp dir
         test_export = tmp_path / "test_export"
         shutil.copytree(gigaverb_export, test_export)
@@ -56,20 +59,20 @@ class TestPatcher:
         genlib_ops = test_export / "gen_dsp" / "genlib_ops.h"
         if genlib_ops.exists():
             content = genlib_ops.read_text()
-            content = content.replace("exp2(", "exp2f(")
-            genlib_ops.write_text(content)
+        content = content.replace("exp2(", "exp2f(")
+        genlib_ops.write_text(content)
 
-            patcher = Patcher(test_export)
-            result = patcher.apply_exp2f_fix(dry_run=False)
+        patcher = Patcher(test_export)
+        result = patcher.apply_exp2f_fix(dry_run=False)
 
-            if result and result.applied:
-                # File should be modified
-                current_content = genlib_ops.read_text()
-                assert "exp2f(" not in current_content
-                assert "exp2(" in current_content
+        if result and result.applied:
+            # File should be modified
+            current_content = genlib_ops.read_text()
+            assert "exp2f(" not in current_content
+            assert "exp2(" in current_content
 
-    def test_apply_all_patches(self, gigaverb_export: Path, tmp_path: Path):
-        """Test applying all patches."""
+    def test_apply_all_patches(self, gigaverb_export: Path, tmp_path: Path) -> object:
+        """apply_all should return a list of patch results."""
         # Copy export to temp dir
         test_export = tmp_path / "test_export"
         shutil.copytree(gigaverb_export, test_export)
@@ -80,8 +83,8 @@ class TestPatcher:
         # Should return a list of results
         assert isinstance(results, list)
 
-    def test_patcher_with_nested_gen_dir(self, tmp_path: Path):
-        """Test patcher finds genlib_ops.h in gen/gen_dsp/ path."""
+    def test_patcher_with_nested_gen_dir(self, tmp_path: Path) -> object:
+        """Nested project structures should still be scanned."""
         # Create nested structure like a project
         project = tmp_path / "project"
         gen_dsp = project / "gen" / "gen_dsp"
@@ -99,8 +102,8 @@ class TestPatcher:
 class TestPatchResult:
     """Tests for PatchResult class."""
 
-    def test_patch_result_repr_applied(self):
-        """Test PatchResult repr when applied."""
+    def test_patch_result_repr_applied(self) -> object:
+        """Applied patch results should mention the patch name."""
         result = PatchResult(
             file_path=Path("/test/file.h"),
             patch_name="test_patch",
@@ -111,8 +114,8 @@ class TestPatchResult:
         assert "test_patch" in repr_str
         assert "applied" in repr_str
 
-    def test_patch_result_repr_skipped(self):
-        """Test PatchResult repr when skipped."""
+    def test_patch_result_repr_skipped(self) -> object:
+        """Skipped patch results should mention the patch name."""
         result = PatchResult(
             file_path=Path("/test/file.h"),
             patch_name="test_patch",

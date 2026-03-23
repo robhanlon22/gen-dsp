@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
-from typing import NamedTuple, Union
+from collections.abc import Callable
+from typing import NamedTuple
 
 from gen_dsp.graph.models import (
-    SVF,
     ADSR,
+    SVF,
     Accum,
     Allpass,
     BinOp,
@@ -54,14 +55,16 @@ from gen_dsp.graph.models import (
     Selector,
     SinOsc,
     Slide,
-    Smoothstep,
     SmoothParam,
+    Smoothstep,
     Splat,
     TriOsc,
     UnaryOp,
     Wave,
     Wrap,
 )
+from gen_dsp.graph.subgraph import expand_subgraphs
+from gen_dsp.graph.toposort import toposort
 
 # Types that are stateful and must never be constant-folded.
 _STATEFUL_TYPES = (
@@ -102,8 +105,12 @@ _STATEFUL_TYPES = (
     Lookup,
 )
 
+STATEFUL_TYPES = _STATEFUL_TYPES
 
-def _resolve_ref(ref: Union[str, float], constants: dict[str, float]) -> float | None:
+DENORM_EPSILON = 1e-18
+
+
+def _resolve_ref(ref: str | float, constants: dict[str, float]) -> float | None:
     """Resolve a Ref to a float if it is a literal or a known constant node."""
     if isinstance(ref, float):
         return ref
@@ -115,12 +122,12 @@ _BINOP_EVAL: dict[str, object] = {
     "sub": lambda a, b: a - b,
     "mul": lambda a, b: a * b,
     "div": lambda a, b: a / b if b != 0.0 else float("inf"),
-    "min": lambda a, b: min(a, b),
-    "max": lambda a, b: max(a, b),
+    "min": min,
+    "max": max,
     "mod": lambda a, b: math.fmod(a, b) if b != 0.0 else 0.0,
     "pow": lambda a, b: a**b,
-    "atan2": lambda a, b: math.atan2(a, b),
-    "hypot": lambda a, b: math.hypot(a, b),
+    "atan2": math.atan2,
+    "hypot": math.hypot,
     "absdiff": lambda a, b: abs(a - b),
     "step": lambda a, b: 1.0 if a >= b else 0.0,
     "and": lambda a, b: 1.0 if (a != 0.0 and b != 0.0) else 0.0,
@@ -174,14 +181,31 @@ _UNARYOP_EVAL: dict[str, object] = {
     "phasewrap": lambda x: x - 2.0 * math.pi * math.floor(x / (2.0 * math.pi) + 0.5),
     "degrees": lambda x: x * (180.0 / math.pi),
     "radians": lambda x: x * (math.pi / 180.0),
-    "fixdenorm": lambda x: 0.0 if abs(x) < 1e-18 else x,
+    "fixdenorm": lambda x: 0.0 if abs(x) < DENORM_EPSILON else x,
     "fixnan": lambda x: 0.0 if math.isnan(x) else x,
-    "isdenorm": lambda x: 1.0 if (abs(x) < 1e-18 and x != 0.0) else 0.0,
+    "isdenorm": lambda x: 1.0 if (abs(x) < DENORM_EPSILON and x != 0.0) else 0.0,
     "isnan": lambda x: 1.0 if math.isnan(x) else x,
     "fastsin": math.sin,
     "fastcos": math.cos,
     "fasttan": math.tan,
     "fastexp": math.exp,
+}
+
+_NAMED_CONSTANT_VALUES: dict[str, float] = {
+    "pi": math.pi,
+    "e": math.e,
+    "twopi": 2.0 * math.pi,
+    "halfpi": math.pi / 2.0,
+    "invpi": 1.0 / math.pi,
+    "degtorad": math.pi / 180.0,
+    "radtodeg": 180.0 / math.pi,
+    "sqrt2": math.sqrt(2.0),
+    "sqrt1_2": math.sqrt(0.5),
+    "ln2": math.log(2.0),
+    "ln10": math.log(10.0),
+    "log2e": math.log2(math.e),
+    "log10e": math.log10(math.e),
+    "phi": (1.0 + math.sqrt(5.0)) / 2.0,
 }
 
 _COMPARE_EVAL: dict[str, object] = {
@@ -194,6 +218,53 @@ _COMPARE_EVAL: dict[str, object] = {
 }
 
 
+def _ref_is_invariant(
+    value: str | float | list[object],
+    input_ids: set[str],
+    allowed_ids: set[str],
+) -> bool:
+    if isinstance(value, float):
+        return True
+    if isinstance(value, str):
+        if value in input_ids:
+            return False
+        return value in allowed_ids
+    if isinstance(value, list):
+        return all(_ref_is_invariant(item, input_ids, allowed_ids) for item in value)
+    return False
+
+
+def _node_is_invariant(
+    node: Node,
+    input_ids: set[str],
+    allowed_ids: set[str],
+) -> bool:
+    for field_name, value in node.__dict__.items():
+        if field_name in _NON_REF_FIELDS:
+            continue
+        if not _ref_is_invariant(value, input_ids, allowed_ids):
+            return False
+    return True
+
+
+def node_is_invariant(
+    node: Node,
+    input_ids: set[str],
+    allowed_ids: set[str],
+) -> bool:
+    """Return True when *node* depends only on invariant or allowed refs."""
+    return _node_is_invariant(node, input_ids, allowed_ids)
+
+
+def _cse_binop(
+    node: BinOp, r: Callable[[str | float], str | float]
+) -> tuple[str | float, ...]:
+    a, b = r(node.a), r(node.b)
+    if node.op in _COMMUTATIVE_OPS:
+        a, b = sorted([a, b], key=_operand_key)
+    return ("binop", node.op, a, b)
+
+
 def _try_fold(node: Node, constants: dict[str, float]) -> float | None:
     """Try to evaluate a node with all-constant inputs. Returns value or None."""
     if isinstance(node, _STATEFUL_TYPES):
@@ -202,157 +273,159 @@ def _try_fold(node: Node, constants: dict[str, float]) -> float | None:
     if isinstance(node, Constant):
         return node.value
 
-    if isinstance(node, BinOp):
-        a = _resolve_ref(node.a, constants)
-        b = _resolve_ref(node.b, constants)
-        if a is not None and b is not None:
-            fn = _BINOP_EVAL[node.op]
-            return float(fn(a, b))  # type: ignore[operator]
+    handlers: dict[type[Node], Callable[[Node], float | None]] = {
+        BinOp: lambda n: _try_fold_binop(n, constants),
+        UnaryOp: lambda n: _try_fold_unaryop(n, constants),
+        Compare: lambda n: _try_fold_compare(n, constants),
+        Select: lambda n: _try_fold_select(n, constants),
+        Clamp: lambda n: _try_fold_clamp(n, constants),
+        Wrap: lambda n: _try_fold_wrap(n, constants),
+        Fold: lambda n: _try_fold_fold(n, constants),
+        Mix: lambda n: _try_fold_mix(n, constants),
+        Scale: lambda n: _try_fold_scale(n, constants),
+        Pass: lambda n: _resolve_ref(n.a, constants),
+        NamedConstant: lambda n: _NAMED_CONSTANT_VALUES[n.op],
+        Smoothstep: lambda n: _try_fold_smoothstep(n, constants),
+        Selector: lambda n: _try_fold_selector(n, constants),
+    }
+    handler = handlers.get(type(node))
+    return handler(node) if handler is not None else None
+
+
+def _try_fold_binop(node: BinOp, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    b = _resolve_ref(node.b, constants)
+    if a is None or b is None:
         return None
+    fn = _BINOP_EVAL[node.op]
+    return float(fn(a, b))  # type: ignore[operator]
 
-    if isinstance(node, UnaryOp):
-        a = _resolve_ref(node.a, constants)
-        if a is not None:
-            fn = _UNARYOP_EVAL.get(node.op)
-            if fn is None:
-                return None  # sr-dependent ops cannot be folded
-            return float(fn(a))  # type: ignore[operator]
+
+def _try_fold_unaryop(node: UnaryOp, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    if a is None:
         return None
-
-    if isinstance(node, Compare):
-        a = _resolve_ref(node.a, constants)
-        b = _resolve_ref(node.b, constants)
-        if a is not None and b is not None:
-            fn = _COMPARE_EVAL[node.op]
-            return float(fn(a, b))  # type: ignore[operator]
+    fn = _UNARYOP_EVAL.get(node.op)
+    if fn is None:
         return None
+    return float(fn(a))  # type: ignore[operator]
 
-    if isinstance(node, Select):
-        c = _resolve_ref(node.cond, constants)
-        a = _resolve_ref(node.a, constants)
-        b = _resolve_ref(node.b, constants)
-        if c is not None and a is not None and b is not None:
-            return a if c > 0.0 else b
+
+def _try_fold_compare(node: Compare, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    b = _resolve_ref(node.b, constants)
+    if a is None or b is None:
         return None
+    fn = _COMPARE_EVAL[node.op]
+    return float(fn(a, b))  # type: ignore[operator]
 
-    if isinstance(node, Clamp):
-        a = _resolve_ref(node.a, constants)
-        lo = _resolve_ref(node.lo, constants)
-        hi = _resolve_ref(node.hi, constants)
-        if a is not None and lo is not None and hi is not None:
-            return min(max(a, lo), hi)
+
+def _try_fold_select(node: Select, constants: dict[str, float]) -> float | None:
+    c = _resolve_ref(node.cond, constants)
+    a = _resolve_ref(node.a, constants)
+    b = _resolve_ref(node.b, constants)
+    if c is None or a is None or b is None:
         return None
+    return a if c > 0.0 else b
 
-    if isinstance(node, Wrap):
-        a = _resolve_ref(node.a, constants)
-        lo = _resolve_ref(node.lo, constants)
-        hi = _resolve_ref(node.hi, constants)
-        if a is not None and lo is not None and hi is not None:
-            r = hi - lo
-            if r == 0.0:
-                return lo
-            raw = math.fmod(a - lo, r)
-            return lo + (raw + r if raw < 0.0 else raw)
+
+def _try_fold_clamp(node: Clamp, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    lo = _resolve_ref(node.lo, constants)
+    hi = _resolve_ref(node.hi, constants)
+    if a is None or lo is None or hi is None:
         return None
+    return min(max(a, lo), hi)
 
-    if isinstance(node, Fold):
-        a = _resolve_ref(node.a, constants)
-        lo = _resolve_ref(node.lo, constants)
-        hi = _resolve_ref(node.hi, constants)
-        if a is not None and lo is not None and hi is not None:
-            r = hi - lo
-            if r == 0.0:
-                return lo
-            t = math.fmod(a - lo, 2.0 * r)
-            if t < 0.0:
-                t += 2.0 * r
-            return lo + t if t <= r else hi - (t - r)
+
+def _try_fold_wrap(node: Wrap, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    lo = _resolve_ref(node.lo, constants)
+    hi = _resolve_ref(node.hi, constants)
+    if a is None or lo is None or hi is None:
         return None
+    r = hi - lo
+    if r == 0.0:
+        return lo
+    raw = math.fmod(a - lo, r)
+    return lo + (raw + r if raw < 0.0 else raw)
 
-    if isinstance(node, Mix):
-        a = _resolve_ref(node.a, constants)
-        b = _resolve_ref(node.b, constants)
-        mix_t = _resolve_ref(node.t, constants)
-        if a is not None and b is not None and mix_t is not None:
-            return a + (b - a) * mix_t
+
+def _try_fold_fold(node: Fold, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    lo = _resolve_ref(node.lo, constants)
+    hi = _resolve_ref(node.hi, constants)
+    if a is None or lo is None or hi is None:
         return None
+    r = hi - lo
+    if r == 0.0:
+        return lo
+    t = math.fmod(a - lo, 2.0 * r)
+    if t < 0.0:
+        t += 2.0 * r
+    return lo + t if t <= r else hi - (t - r)
 
-    if isinstance(node, Scale):
-        a = _resolve_ref(node.a, constants)
-        in_lo = _resolve_ref(node.in_lo, constants)
-        in_hi = _resolve_ref(node.in_hi, constants)
-        out_lo = _resolve_ref(node.out_lo, constants)
-        out_hi = _resolve_ref(node.out_hi, constants)
-        if (
-            a is not None
-            and in_lo is not None
-            and in_hi is not None
-            and out_lo is not None
-            and out_hi is not None
-        ):
-            in_range = in_hi - in_lo
-            if in_range == 0.0:
-                return out_lo
-            return out_lo + (a - in_lo) / in_range * (out_hi - out_lo)
+
+def _try_fold_mix(node: Mix, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    b = _resolve_ref(node.b, constants)
+    mix_t = _resolve_ref(node.t, constants)
+    if a is None or b is None or mix_t is None:
         return None
+    return a + (b - a) * mix_t
 
-    if isinstance(node, Pass):
-        a = _resolve_ref(node.a, constants)
-        if a is not None:
-            return a
+
+def _try_fold_scale(node: Scale, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    in_lo = _resolve_ref(node.in_lo, constants)
+    in_hi = _resolve_ref(node.in_hi, constants)
+    out_lo = _resolve_ref(node.out_lo, constants)
+    out_hi = _resolve_ref(node.out_hi, constants)
+    if (
+        a is None
+        or in_lo is None
+        or in_hi is None
+        or out_lo is None
+        or out_hi is None
+    ):
         return None
+    in_range = in_hi - in_lo
+    if in_range == 0.0:
+        return out_lo
+    return out_lo + (a - in_lo) / in_range * (out_hi - out_lo)
 
-    if isinstance(node, SampleRate):
-        return None  # runtime value, not constant-foldable
 
-    if isinstance(node, NamedConstant):
-        from gen_dsp.graph.compile import _NAMED_CONSTANT_VALUES
-
-        return _NAMED_CONSTANT_VALUES[node.op]
-
-    if isinstance(node, Smoothstep):
-        a = _resolve_ref(node.a, constants)
-        e0 = _resolve_ref(node.edge0, constants)
-        e1 = _resolve_ref(node.edge1, constants)
-        if a is not None and e0 is not None and e1 is not None:
-            rng = e1 - e0
-            if rng == 0.0:
-                return 0.0
-            t = min(max((a - e0) / rng, 0.0), 1.0)
-            return t * t * (3.0 - 2.0 * t)
+def _try_fold_smoothstep(node: Smoothstep, constants: dict[str, float]) -> float | None:
+    a = _resolve_ref(node.a, constants)
+    e0 = _resolve_ref(node.edge0, constants)
+    e1 = _resolve_ref(node.edge1, constants)
+    if a is None or e0 is None or e1 is None:
         return None
+    rng = e1 - e0
+    if rng == 0.0:
+        return 0.0
+    t = min(max((a - e0) / rng, 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
-    if isinstance(node, GateRoute):
-        # Multi-output container -- cannot fold to single constant
+
+def _try_fold_selector(node: Selector, constants: dict[str, float]) -> float | None:
+    idx = _resolve_ref(node.index, constants)
+    if idx is None:
         return None
-
-    if isinstance(node, GateOut):
-        # Could fold if gate's index and value are known, but GateRoute
-        # can't fold, so GateOut won't have constant gate refs in practice.
+    resolved = [_resolve_ref(inp, constants) for inp in node.inputs]
+    if any(v is None for v in resolved):
         return None
-
-    if isinstance(node, Selector):
-        idx = _resolve_ref(node.index, constants)
-        if idx is None:
-            return None
-        resolved = [_resolve_ref(inp, constants) for inp in node.inputs]
-        if any(v is None for v in resolved):
-            return None
-        n = len(node.inputs)
-        i = int(idx)
-        i = max(0, min(i, n))
-        return resolved[i - 1] if i > 0 else 0.0
-
-    return None
+    n = len(node.inputs)
+    i = max(0, min(int(idx), n))
+    return resolved[i - 1] if i > 0 else 0.0
 
 
 def constant_fold(graph: Graph) -> Graph:
-    """Replace pure nodes with all-constant inputs by Constant nodes.
+    """
+    Replace pure nodes with all-constant inputs by Constant nodes.
 
     Returns a new Graph (immutable transform). Stateful nodes are never folded.
     """
-    from gen_dsp.graph.toposort import toposort
-
     sorted_nodes = toposort(graph)
     constants: dict[str, float] = {}
     new_nodes: list[Node] = []
@@ -385,8 +458,52 @@ def constant_fold(graph: Graph) -> Graph:
     return graph.model_copy(update={"nodes": new_nodes})
 
 
+def _gather_dead_node_writers(
+    nodes: list[Node],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    delay_writers: dict[str, list[str]] = {}
+    buffer_writers: dict[str, list[str]] = {}
+    for node in nodes:
+        if isinstance(node, DelayWrite):
+            delay_writers.setdefault(node.delay, []).append(node.id)
+        elif isinstance(node, (BufWrite, Splat)):
+            buffer_writers.setdefault(node.buffer, []).append(node.id)
+    return delay_writers, buffer_writers
+
+
+def _enqueue_node_refs(node: Node, node_ids: set[str], worklist: list[str]) -> None:
+    for field_name, value in node.__dict__.items():
+        if field_name in ("id", "op"):
+            continue
+        if isinstance(value, list):
+            worklist.extend(
+                item for item in value if isinstance(item, str) and item in node_ids
+            )
+        elif isinstance(value, str) and value in node_ids:
+            worklist.append(value)
+
+
+def _enqueue_delay_writers(
+    node: Node,
+    delay_writers: dict[str, list[str]],
+    worklist: list[str],
+) -> None:
+    if isinstance(node, DelayRead):
+        worklist.extend(delay_writers.get(node.delay, []))
+
+
+def _enqueue_buffer_writers(
+    node: Node,
+    buffer_writers: dict[str, list[str]],
+    worklist: list[str],
+) -> None:
+    if isinstance(node, (BufRead, BufSize)):
+        worklist.extend(buffer_writers.get(node.buffer, []))
+
+
 def eliminate_dead_nodes(graph: Graph) -> Graph:
-    """Remove nodes not reachable from any output.
+    """
+    Remove nodes not reachable from any output.
 
     Walks backward from output sources, following ALL string fields
     (including feedback edges).  When a DelayRead is reachable, the
@@ -397,20 +514,7 @@ def eliminate_dead_nodes(graph: Graph) -> Graph:
     """
     node_ids = {node.id for node in graph.nodes}
     node_map = {node.id: node for node in graph.nodes}
-
-    # Map delay-line ID -> DelayWrite node IDs that write to it
-    delay_writers: dict[str, list[str]] = {}
-    for node in graph.nodes:
-        if isinstance(node, DelayWrite):
-            delay_writers.setdefault(node.delay, []).append(node.id)
-
-    # Map buffer ID -> BufWrite/Splat node IDs that write to it
-    buffer_writers: dict[str, list[str]] = {}
-    for node in graph.nodes:
-        if isinstance(node, (BufWrite, Splat)):
-            buffer_writers.setdefault(node.buffer, []).append(node.id)
-
-    # Seed with output sources
+    delay_writers, buffer_writers = _gather_dead_node_writers(graph.nodes)
     reachable: set[str] = set()
     worklist: list[str] = [
         out.source for out in graph.outputs if out.source in node_ids
@@ -424,31 +528,17 @@ def eliminate_dead_nodes(graph: Graph) -> Graph:
         if nid not in node_map:
             continue
         node = node_map[nid]
-        # Follow all string fields (and list items)
-        for field_name, value in node.__dict__.items():
-            if field_name in ("id", "op"):
-                continue
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, str) and item in node_ids:
-                        worklist.append(item)
-            elif isinstance(value, str) and value in node_ids:
-                worklist.append(value)
-        # If this is a DelayRead, also mark the corresponding writers
-        if isinstance(node, DelayRead):
-            for writer_id in delay_writers.get(node.delay, []):
-                worklist.append(writer_id)
-        # If this is a BufRead or BufSize, also mark the corresponding writers
-        if isinstance(node, (BufRead, BufSize)):
-            for writer_id in buffer_writers.get(node.buffer, []):
-                worklist.append(writer_id)
+        _enqueue_node_refs(node, node_ids, worklist)
+        _enqueue_delay_writers(node, delay_writers, worklist)
+        _enqueue_buffer_writers(node, buffer_writers, worklist)
 
     new_nodes = [node for node in graph.nodes if node.id in reachable]
     return graph.model_copy(update={"nodes": new_nodes})
 
 
 def promote_control_rate(graph: Graph) -> Graph:
-    """Promote audio-rate pure nodes to control-rate when all deps are control/invariant.
+    """
+    Promote audio-rate pure nodes to control-rate when all deps are control/invariant.
 
     A non-stateful node is promoted if it is not already control-rate or
     loop-invariant, and every string Ref field resolves to a param, literal
@@ -457,94 +547,34 @@ def promote_control_rate(graph: Graph) -> Graph:
     Returns a new Graph with additional entries in ``control_nodes``.
     No-op when ``control_interval <= 0`` or ``control_nodes`` is empty.
     """
+    return _promote_control_rate_impl(graph)
+
+
+def _promote_control_rate_impl(graph: Graph) -> Graph:
     if graph.control_interval <= 0 or not graph.control_nodes:
         return graph
-
-    from gen_dsp.graph.toposort import toposort
 
     sorted_nodes = toposort(graph)
     input_ids = {inp.id for inp in graph.inputs}
     param_names = {p.name for p in graph.params}
 
-    # Compute invariant set (mirrors compile.py _classify_loop_invariance).
     invariant_ids: set[str] = set()
     for node in sorted_nodes:
         if isinstance(node, _STATEFUL_TYPES):
             continue
-        is_invariant = True
-        for field_name, value in node.__dict__.items():
-            if field_name in _NON_REF_FIELDS:
-                continue
-            if isinstance(value, float):
-                continue
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, float):
-                        continue
-                    if isinstance(item, str):
-                        if item in input_ids:
-                            is_invariant = False
-                            break
-                        if item in param_names or item in invariant_ids:
-                            continue
-                        is_invariant = False
-                        break
-                if not is_invariant:
-                    break
-                continue
-            if isinstance(value, str):
-                if value in input_ids:
-                    is_invariant = False
-                    break
-                if value in param_names or value in invariant_ids:
-                    continue
-                is_invariant = False
-                break
-        if is_invariant:
+        if _node_is_invariant(node, input_ids, param_names | invariant_ids):
             invariant_ids.add(node.id)
 
-    # Walk topo-sorted nodes and promote eligible ones.
-    control_set = set(graph.control_nodes)
+    allowed_ids = set(graph.control_nodes) | invariant_ids
     promoted: list[str] = []
     for node in sorted_nodes:
         if isinstance(node, _STATEFUL_TYPES):
             continue
-        if node.id in control_set or node.id in invariant_ids:
+        if node.id in allowed_ids:
             continue
-        is_promotable = True
-        for field_name, value in node.__dict__.items():
-            if field_name in _NON_REF_FIELDS:
-                continue
-            if isinstance(value, float):
-                continue
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, float):
-                        continue
-                    if isinstance(item, str):
-                        if (
-                            item in param_names
-                            or item in invariant_ids
-                            or item in control_set
-                        ):
-                            continue
-                        is_promotable = False
-                        break
-                if not is_promotable:
-                    break
-                continue
-            if isinstance(value, str):
-                if (
-                    value in param_names
-                    or value in invariant_ids
-                    or value in control_set
-                ):
-                    continue
-                is_promotable = False
-                break
-        if is_promotable:
+        if _node_is_invariant(node, input_ids, param_names | allowed_ids):
             promoted.append(node.id)
-            control_set.add(node.id)  # enable transitive promotion
+            allowed_ids.add(node.id)
 
     if not promoted:
         return graph
@@ -556,72 +586,68 @@ _COMMUTATIVE_OPS = frozenset({"add", "mul", "min", "max"})
 _NON_REF_FIELDS = frozenset({"id", "op", "interp", "mode", "count", "channel"})
 
 
-def _operand_key(ref: Union[str, float]) -> tuple[int, Union[str, float]]:
+def _operand_key(ref: str | float) -> tuple[int, str | float]:
     """Sort key for commutative operand canonicalization."""
     if isinstance(ref, float):
         return (0, ref)
     return (1, ref)
 
 
-def _cse_key(
-    node: Node, rewrite: dict[str, str]
-) -> tuple[Union[str, float], ...] | None:
-    """Compute a hashable expression key for a pure node, or None if not eligible.
+def _cse_key(node: Node, rewrite: dict[str, str]) -> tuple[str | float, ...] | None:
+    """
+    Compute a hashable expression key for a pure node, or None if not eligible.
 
     Ref fields are resolved through *rewrite* first so that transitive CSE works.
     """
-    if isinstance(node, _STATEFUL_TYPES):
-        return None
-
-    def r(v: Union[str, float]) -> Union[str, float]:
+    def r(v: str | float) -> str | float:
         if isinstance(v, str):
             return rewrite.get(v, v)
         return v
 
-    if isinstance(node, BinOp):
-        a, b = r(node.a), r(node.b)
-        if node.op in _COMMUTATIVE_OPS:
-            a, b = sorted([a, b], key=_operand_key)
-        return ("binop", node.op, a, b)
-    if isinstance(node, UnaryOp):
-        return ("unaryop", node.op, r(node.a))
-    if isinstance(node, Constant):
-        return ("constant", node.value)
-    if isinstance(node, Compare):
-        return ("compare", node.op, r(node.a), r(node.b))
-    if isinstance(node, Select):
-        return ("select", r(node.cond), r(node.a), r(node.b))
-    if isinstance(node, Clamp):
-        return ("clamp", r(node.a), r(node.lo), r(node.hi))
-    if isinstance(node, Wrap):
-        return ("wrap", r(node.a), r(node.lo), r(node.hi))
-    if isinstance(node, Fold):
-        return ("fold", r(node.a), r(node.lo), r(node.hi))
-    if isinstance(node, Mix):
-        return ("mix", r(node.a), r(node.b), r(node.t))
-    if isinstance(node, Scale):
-        return (
+    if isinstance(node, _STATEFUL_TYPES):
+        return None
+
+    builders = {
+        BinOp: lambda n: (
+            "binop",
+            n.op,
+            *(
+                sorted([r(n.a), r(n.b)], key=_operand_key)
+                if n.op in _COMMUTATIVE_OPS
+                else (r(n.a), r(n.b))
+            ),
+        ),
+        UnaryOp: lambda n: ("unaryop", n.op, r(n.a)),
+        Constant: lambda n: ("constant", n.value),
+        Compare: lambda n: ("compare", n.op, r(n.a), r(n.b)),
+        Select: lambda n: ("select", r(n.cond), r(n.a), r(n.b)),
+        Clamp: lambda n: ("clamp", r(n.a), r(n.lo), r(n.hi)),
+        Wrap: lambda n: ("wrap", r(n.a), r(n.lo), r(n.hi)),
+        Fold: lambda n: ("fold", r(n.a), r(n.lo), r(n.hi)),
+        Mix: lambda n: ("mix", r(n.a), r(n.b), r(n.t)),
+        Scale: lambda n: (
             "scale",
-            r(node.a),
-            r(node.in_lo),
-            r(node.in_hi),
-            r(node.out_lo),
-            r(node.out_hi),
-        )
-    if isinstance(node, Pass):
-        return ("pass", r(node.a))
-    if isinstance(node, SampleRate):
-        return ("samplerate",)
-    if isinstance(node, NamedConstant):
-        return ("namedconstant", node.op)
-    if isinstance(node, Smoothstep):
-        return ("smoothstep", r(node.a), r(node.edge0), r(node.edge1))
-    if isinstance(node, GateRoute):
-        return ("gate_route", r(node.a), r(node.index), node.count)
-    if isinstance(node, GateOut):
-        return ("gate_out", node.gate, node.channel)
-    if isinstance(node, Selector):
-        return ("selector", r(node.index), *tuple(r(inp) for inp in node.inputs))
+            r(n.a),
+            r(n.in_lo),
+            r(n.in_hi),
+            r(n.out_lo),
+            r(n.out_hi),
+        ),
+        Pass: lambda n: ("pass", r(n.a)),
+        SampleRate: lambda _: ("samplerate",),
+        NamedConstant: lambda n: ("namedconstant", n.op),
+        Smoothstep: lambda n: ("smoothstep", r(n.a), r(n.edge0), r(n.edge1)),
+        GateRoute: lambda n: ("gate_route", r(n.a), r(n.index), n.count),
+        GateOut: lambda n: ("gate_out", n.gate, n.channel),
+        Selector: lambda n: (
+            "selector",
+            r(n.index),
+            *tuple(r(inp) for inp in n.inputs),
+        ),
+    }
+    builder = builders.get(type(node))
+    if builder is not None:
+        return builder(node)
     return None
 
 
@@ -643,17 +669,16 @@ def _rewrite_refs(node: Node, rewrite: dict[str, str]) -> Node:
 
 
 def eliminate_cse(graph: Graph) -> Graph:
-    """Eliminate common subexpressions from the graph.
+    """
+    Eliminate common subexpressions from the graph.
 
     Two pure nodes with identical (type, op, resolved ref fields) are
     duplicates -- the later one is removed and all references rewritten
     to point to the earlier (canonical) one.
     """
-    from gen_dsp.graph.toposort import toposort
-
     sorted_nodes = toposort(graph)
     rewrite: dict[str, str] = {}
-    seen: dict[tuple[Union[str, float], ...], str] = {}
+    seen: dict[tuple[str | float, ...], str] = {}
 
     for node in sorted_nodes:
         key = _cse_key(node, rewrite)
@@ -665,19 +690,17 @@ def eliminate_cse(graph: Graph) -> Graph:
     if not rewrite:
         return graph
 
-    new_nodes = []
-    for node in graph.nodes:
-        if node.id in rewrite:
-            continue
-        new_nodes.append(_rewrite_refs(node, rewrite))
-
-    new_outputs = []
-    for out in graph.outputs:
-        source = rewrite.get(out.source, out.source)
-        if source != out.source:
-            new_outputs.append(out.model_copy(update={"source": source}))
-        else:
-            new_outputs.append(out)
+    new_nodes = [
+        _rewrite_refs(node, rewrite)
+        for node in graph.nodes
+        if node.id not in rewrite
+    ]
+    new_outputs = [
+        out.model_copy(update={"source": source})
+        if (source := rewrite.get(out.source, out.source)) != out.source
+        else out
+        for out in graph.outputs
+    ]
 
     return graph.model_copy(update={"nodes": new_nodes, "outputs": new_outputs})
 
@@ -697,14 +720,17 @@ class OptimizeResult(NamedTuple):
     graph: Graph
     stats: OptimizeStats
 
+    def __getattr__(self, name: str) -> object:
+        """Delegate graph attributes for compatibility with older call sites."""
+        return getattr(self.graph, name)
+
 
 def optimize_graph(graph: Graph) -> OptimizeResult:
-    """Apply all optimization passes: constant folding, CSE, then dead node elimination.
+    """
+    Apply all optimization passes: constant folding, CSE, then dead node elimination.
 
     Returns an ``OptimizeResult(graph, stats)`` named tuple.
     """
-    from gen_dsp.graph.subgraph import expand_subgraphs
-
     graph = expand_subgraphs(graph)
 
     result = constant_fold(graph)

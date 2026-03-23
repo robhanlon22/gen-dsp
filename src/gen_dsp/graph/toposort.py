@@ -9,7 +9,8 @@ from gen_dsp.graph.models import Graph, Node
 
 
 def toposort(graph: Graph) -> list[Node]:
-    """Return graph nodes in topological order (Kahn's algorithm).
+    """
+    Return graph nodes in topological order (Kahn's algorithm).
 
     Uses alphabetical tie-breaking for deterministic output.
     Raises ValueError if the graph contains a cycle (through non-feedback edges).
@@ -21,7 +22,7 @@ def toposort(graph: Graph) -> list[Node]:
     node_map: dict[str, Node] = {node.id: node for node in graph.nodes}
 
     # Build in-degree and reverse adjacency
-    in_degree: dict[str, int] = {nid: 0 for nid in node_map}
+    in_degree: dict[str, int] = dict.fromkeys(node_map, 0)
     reverse: dict[str, list[str]] = defaultdict(list)
     for nid, dep_set in deps.items():
         for dep in dep_set:
@@ -44,9 +45,8 @@ def toposort(graph: Graph) -> list[Node]:
 
     if len(result) < len(node_map):
         cycle_nodes = sorted(nid for nid, deg in in_degree.items() if deg > 0)
-        raise ValueError(
-            f"Graph contains a cycle through nodes: {', '.join(cycle_nodes)}"
-        )
+        msg = f"Graph contains a cycle through nodes: {', '.join(cycle_nodes)}"
+        raise ValueError(msg)
 
     return result
 

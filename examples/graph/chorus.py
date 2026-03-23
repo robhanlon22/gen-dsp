@@ -1,4 +1,5 @@
-"""Mono chorus effect using a modulated delay line.
+"""
+Mono chorus effect using a modulated delay line.
 
 An LFO modulates the delay tap position around a 10ms center to create
 the characteristic pitch wobble. Demonstrates SinOsc with DelayLine.
@@ -8,8 +9,11 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
+from gen_dsp.core.builder import Builder
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.graph import (
     AudioInput,
     AudioOutput,
@@ -21,10 +25,11 @@ from gen_dsp.graph import (
     Param,
     SinOsc,
 )
-from gen_dsp.core.project import ProjectConfig, ProjectGenerator
+from gen_dsp.graph.visualize import graph_to_dot_file
 
 
 def make_graph() -> Graph:
+    """Build the example graph."""
     return Graph(
         name="chorus",
         inputs=[AudioInput(id="in1")],
@@ -40,12 +45,10 @@ def make_graph() -> Graph:
             BinOp(id="depth_samp", op="mul", a="depth", b=220.0),
             BinOp(id="mod", op="mul", a="lfo", b="depth_samp"),
             BinOp(id="tap", op="add", a=441.0, b="mod"),
-
             # Delay line
             DelayLine(id="dline", max_samples=2048),
             DelayWrite(id="dwrite", delay="dline", value="in1"),
             DelayRead(id="delayed", delay="dline", tap="tap"),
-
             # Dry/wet mix
             BinOp(id="inv_mix", op="sub", a=1.0, b="mix"),
             BinOp(id="dry", op="mul", a="in1", b="inv_mix"),
@@ -56,22 +59,31 @@ def make_graph() -> Graph:
 
 
 def main() -> None:
+    """Run the example CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-p", "--platform", default=None, help="Target platform (clap, vst3, au, ...)")
-    parser.add_argument("-l", "--list", action="store_true", help="List available platforms")
-    parser.add_argument("-b", "--build", action="store_true", help="Build after generating")
+    parser.add_argument(
+        "-p", "--platform", default=None, help="Target platform (clap, vst3, au, ...)"
+    )
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="List available platforms"
+    )
+    parser.add_argument(
+        "-b", "--build", action="store_true", help="Build after generating"
+    )
     parser.add_argument("-o", "--output", type=Path, default=None)
-    parser.add_argument("-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF")
+    parser.add_argument(
+        "-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF"
+    )
     args = parser.parse_args()
 
     if args.list:
-        print("Available platforms:", ", ".join(ProjectConfig.list_platforms()))
+        platforms = ", ".join(ProjectConfig.list_platforms())
+        sys.stdout.write(f"Available platforms: {platforms}\n")
         return
     graph = make_graph()
     if args.dot:
-        from gen_dsp.graph.visualize import graph_to_dot_file
-        dot_path = graph_to_dot_file(graph, args.output or Path("."))
-        print(f"DOT: {dot_path}")
+        dot_path = graph_to_dot_file(graph, args.output or Path())
+        sys.stdout.write(f"DOT: {dot_path}\n")
         return
     if not args.platform:
         parser.error("-p/--platform is required (use -l to list available platforms)")
@@ -81,13 +93,14 @@ def main() -> None:
     gen = ProjectGenerator.from_graph(graph, config)
     project_dir = gen.generate(output_dir=output)
 
-    print(f"Project generated at: {project_dir}")
+    sys.stdout.write(f"Project generated at: {project_dir}\n")
     if args.build:
-        from gen_dsp.core.builder import Builder
         result = Builder(project_dir).build(args.platform, verbose=True)
-        print(f"Build {'succeeded' if result.success else 'failed'}: {result}")
+        status = "succeeded" if result.success else "failed"
+        sys.stdout.write(f"Build {status}: {result}\n")
     else:
-        print(f"Build with: cd {project_dir} && cmake -B build && cmake --build build")
+        build_cmd = f"cd {project_dir} && cmake -B build && cmake --build build"
+        sys.stdout.write(f"Build with: {build_cmd}\n")
 
 
 if __name__ == "__main__":

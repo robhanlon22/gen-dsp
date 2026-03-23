@@ -1,3 +1,5 @@
+"""Pytest fixtures for graph tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +41,6 @@ def stereo_gain_graph() -> Graph:
         ],
     )
 
-
 @pytest.fixture
 def onepole_graph() -> Graph:
     """One-pole lowpass filter with feedback via History."""
@@ -56,7 +57,6 @@ def onepole_graph() -> Graph:
             BinOp(id="result", op="add", a="dry", b="wet"),
         ],
     )
-
 
 @pytest.fixture
 def fbdelay_graph() -> Graph:
@@ -85,10 +85,10 @@ def fbdelay_graph() -> Graph:
         ],
     )
 
-
 @pytest.fixture
 def gen_dsp_graph() -> Graph:
-    """Rich graph for gen-dsp adapter testing.
+    """
+    Rich graph for gen-dsp adapter testing.
 
     2 inputs, 2 outputs, params, buffer, delay, oscillator, filter.
     Exercises the full adapter surface area.
@@ -106,21 +106,15 @@ def gen_dsp_graph() -> Graph:
             Param(name="cutoff", min=0.0, max=0.999, default=0.3),
         ],
         nodes=[
-            # Oscillator
             SinOsc(id="osc1", freq="freq"),
             BinOp(id="osc_scaled", op="mul", a="osc1", b="gain"),
-            # Mix oscillator with input
             BinOp(id="mixed1", op="add", a="in1", b="osc_scaled"),
-            # Filter on second channel
             OnePole(id="lp", a="in2", coeff="cutoff"),
-            # Delay line
             DelayLine(id="dly", max_samples=4800),
             DelayWrite(id="dly_wr", delay="dly", value="lp"),
             DelayRead(id="dly_rd", delay="dly", tap=2400.0),
             BinOp(id="filtered", op="add", a="lp", b="dly_rd"),
-            # History for feedback
             History(id="prev_out", init=0.0, input="filtered"),
-            # Buffer (wavetable)
             Buffer(id="wt", size=1024),
             BufRead(id="wt_rd", buffer="wt", index=0.0),
             BufWrite(id="wt_wr", buffer="wt", index=0.0, value="osc1"),

@@ -1,12 +1,9 @@
-"""
-PureData platform implementation.
-"""
+"""PureData platform implementation."""
 
 import platform as sys_platform
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
@@ -27,9 +24,9 @@ class PureDataPlatform(Platform):
         system = sys_platform.system().lower()
         if system == "darwin":
             return ".pd_darwin"
-        elif system == "linux":
+        if system == "linux":
             return ".pd_linux"
-        elif system == "windows":
+        if system == "windows":
             return ".dll"
         return ".pd_linux"
 
@@ -42,12 +39,14 @@ class PureDataPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate PureData project files."""
+        _ = config
         templates_dir = get_pd_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"PureData templates not found at {templates_dir}")
+            msg = f"PureData templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -119,7 +118,8 @@ class PureDataPlatform(Platform):
             )
         else:
             # Fallback: generate directly
-            content = f"""# Makefile for {lib_name}
+            content = (
+                f"""# Makefile for {lib_name}
 
 # Name of the exported .cpp/.h file from gen~
 gen.name = {gen_name}
@@ -130,7 +130,10 @@ lib.name = {lib_name}
 gendsp.version = {self.GENEXT_VERSION}
 
 $(lib.name)~.class.sources = gen_dsp.cpp _ext.cpp ./gen/gen_dsp/genlib.cpp
-cflags = -I ./gen -I./gen/gen_dsp -DGEN_EXT_VERSION=$(gendsp.version) -DPD_EXT_NAME=$(lib.name) -DGEN_EXPORTED_NAME=$(gen.name) -DGEN_EXPORTED_HEADER=\\"$(gen.name).h\\" -DGEN_EXPORTED_CPP=\\"$(gen.name).cpp\\"
+cflags = -I ./gen -I./gen/gen_dsp -DGEN_EXT_VERSION=$(gendsp.version) """
+                f"""-DPD_EXT_NAME=$(lib.name) -DGEN_EXPORTED_NAME=$(gen.name) """
+                f"""-DGEN_EXPORTED_HEADER=\\"$(gen.name).h\\" """
+                f"""-DGEN_EXPORTED_CPP=\\"$(gen.name).cpp\\"
 suppress-wunused = yes
 
 define forDarwin
@@ -147,19 +150,22 @@ PDINCLUDEDIR ?= ./pd-include
 
 include ./pd-lib-builder/Makefile.pdlibbuilder
 """
+            )
 
         output_path.write_text(content, encoding="utf-8")
 
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build PureData external using make."""
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         # Clean if requested
         if clean:
@@ -184,7 +190,7 @@ include ./pd-lib-builder/Makefile.pdlibbuilder
         """Clean build artifacts."""
         self.run_command(["make", "clean"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built PureData external file."""
         # Look for files with the platform extension
         for f in project_dir.glob(f"*{self.extension}"):

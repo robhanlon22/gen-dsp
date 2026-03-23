@@ -5,10 +5,10 @@ Uses the platform registry to dynamically select the appropriate
 build system for each platform.
 """
 
+import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from gen_dsp.errors import BuildError
 
@@ -19,12 +19,13 @@ class BuildResult:
 
     success: bool
     platform: str
-    output_file: Optional[Path]
+    output_file: Path | None
     stdout: str
     stderr: str
     return_code: int
 
     def __repr__(self) -> str:
+        """Return a compact summary of the build result."""
         status = "success" if self.success else "failed"
         output = f" -> {self.output_file}" if self.output_file else ""
         return f"BuildResult({self.platform}: {status}{output})"
@@ -33,21 +34,24 @@ class BuildResult:
 class Builder:
     """Build gen_dsp projects."""
 
-    def __init__(self, project_dir: Path | str):
+    def __init__(self, project_dir: Path | str) -> None:
         """
         Initialize builder with project directory.
 
         Args:
             project_dir: Path to the gen_dsp project directory.
+
         """
         self.project_dir = Path(project_dir).resolve()
 
         if not self.project_dir.is_dir():
-            raise BuildError(f"Project directory not found: {self.project_dir}")
+            message = f"Project directory not found: {self.project_dir}"
+            raise BuildError(message)
 
     def build(
         self,
         target_platform: str = "pd",
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
@@ -65,11 +69,12 @@ class Builder:
         Raises:
             BuildError: If build fails and cannot be recovered.
             ValueError: If platform is not recognized.
+
         """
-        from gen_dsp.platforms import get_platform
+        platforms = importlib.import_module("gen_dsp.platforms")
 
         try:
-            platform_impl = get_platform(target_platform)
+            platform_impl = platforms.get_platform(target_platform)
         except ValueError as e:
             raise BuildError(str(e)) from e
 
@@ -81,22 +86,24 @@ class Builder:
 
         Args:
             target_platform: Platform name (e.g., 'pd', 'max').
+
         """
-        from gen_dsp.platforms import get_platform
+        platforms = importlib.import_module("gen_dsp.platforms")
 
         try:
-            platform_impl = get_platform(target_platform)
+            platform_impl = platforms.get_platform(target_platform)
         except ValueError as e:
             raise BuildError(str(e)) from e
 
         platform_impl.clean(self.project_dir)
 
-    def get_lib_name(self) -> Optional[str]:
+    def get_lib_name(self) -> str | None:
         """
         Get the lib.name from the project Makefile.
 
         Returns:
             The lib.name value or None if not found.
+
         """
         makefile = self.project_dir / "Makefile"
         if not makefile.exists():

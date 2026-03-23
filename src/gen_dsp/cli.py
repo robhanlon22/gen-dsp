@@ -18,20 +18,20 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
+from importlib import import_module
 from pathlib import Path
-from typing import Optional
+from typing import TextIO
 
 from gen_dsp import __version__
-
-from gen_dsp.core.parser import GenExportParser
-from gen_dsp.core.project import ProjectGenerator, ProjectConfig
-from gen_dsp.core.patcher import Patcher
 from gen_dsp.core.builder import Builder
+from gen_dsp.core.parser import GenExportParser
+from gen_dsp.core.patcher import Patcher
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.errors import GenExtError
-from gen_dsp.platforms import list_platforms, get_platform
+from gen_dsp.platforms import get_platform, list_platforms
 from gen_dsp.platforms.base import Platform
-
 
 # Known subcommands for two-phase dispatch.
 SUBCOMMANDS = {
@@ -49,10 +49,36 @@ SUBCOMMANDS = {
 }
 
 
+def _write(stream: TextIO, message: str = "") -> None:
+    """Write a single line to a text stream."""
+    if message.endswith("\n"):
+        stream.write(message)
+    else:
+        stream.write(f"{message}\n")
+
+
+def _stdout(message: str = "") -> None:
+    """Write a single line to stdout."""
+    _write(sys.stdout, message)
+
+
+def _stderr(message: str = "") -> None:
+    """Write a single line to stderr."""
+    _write(sys.stderr, message)
+
+
+def _report_block(header: str, items: list[object]) -> None:
+    """Report a block of errors or configuration messages."""
+    _stderr(header)
+    for item in items:
+        _stderr(f"  - {item}")
+
+
 def _print_help() -> None:
     """Print top-level help text."""
     platforms = ", ".join(list_platforms())
-    print(f"""\
+    _stdout(
+        f"""\
 usage: gen-dsp <source> -p <platform> [options]
        gen-dsp <command> [args]
 
@@ -98,7 +124,8 @@ Subcommands:
 Options:
   -V, --version             Show version
   -h, --help                Show this help
-""")
+"""
+    )
 
 
 def _make_default_parser() -> argparse.ArgumentParser:
@@ -149,7 +176,10 @@ def _make_default_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-shared-cache",
         action="store_true",
-        help="Disable shared OS cache for FetchContent downloads (CMake-based platforms)",
+        help=(
+            "Disable shared OS cache for FetchContent downloads "
+            "(CMake-based platforms)"
+        ),
     )
     parser.add_argument(
         "--cache-dir",
@@ -327,95 +357,235 @@ def _make_subcommand_parser() -> argparse.ArgumentParser:
 
     # graph subcommands (compile, validate, dot, sim)
     try:
-        from gen_dsp.graph.cli import (
-            add_compile_parser,
-            add_validate_parser,
-            add_dot_parser,
-            add_sim_parser,
-        )
-
-        add_compile_parser(subparsers)
-        add_validate_parser(subparsers)
-        add_dot_parser(subparsers)
-        add_sim_parser(subparsers)
+        graph_cli = import_module("gen_dsp.graph.cli")
     except ImportError:
         pass
+    else:
+        graph_cli.add_compile_parser(subparsers)
+        graph_cli.add_validate_parser(subparsers)
+        graph_cli.add_dot_parser(subparsers)
+        graph_cli.add_sim_parser(subparsers)
 
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Command handlers
-# ---------------------------------------------------------------------------
-
-
-def _cmd_default(argv: list[str]) -> int:
-    """Handle the default command: <source> -p <platform> [flags]."""
-    parser = _make_default_parser()
-    args = parser.parse_args(argv)
-
-    source = args.source.resolve()
-
-    # Auto-detect source type
-    if source.is_file() and source.suffix in (".gdsp", ".json"):
-        return _cmd_default_graph(args, source)
-    elif source.is_dir():
-        return _cmd_default_export(args, source)
-    else:
-        print(
-            f"Error: source not found or unrecognized type: {source}", file=sys.stderr
-        )
-        print(
-            "Expected: directory (gen~ export), .gdsp file, or .json file",
-            file=sys.stderr,
-        )
-        return 1
-
-
-def _cmd_default_graph(args: argparse.Namespace, graph_path: Path) -> int:
-    """Handle default command with a graph file source."""
+def _require_graph_support() -> bool:
+    """Check whether graph-specific support is available."""
     try:
-        from gen_dsp.graph import _require_dsp_graph
-
-        _require_dsp_graph()
+        graph_module = import_module("gen_dsp.graph")
+        require_dsp_graph = graph_module.__dict__["_require_dsp_graph"]
+        require_dsp_graph()
     except ImportError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        return 1
+        _stderr(f"Error: {e}")
+        return False
+    return True
 
-    from gen_dsp.graph.models import Graph
-    from gen_dsp.graph.validate import validate_graph
 
-    # Infer name
+def _load_graph_source(graph_path: Path) -> object:
+    """Load a graph from JSON or .gdsp."""
+    graph_module = import_module("gen_dsp.graph.models")
+    graph_cls = graph_module.Graph
+    graph_cli = import_module("gen_dsp.graph.cli")
+    graph_errors = graph_cli.__dict__["_gdsp_errors"]()
+    validation_error = import_module("pydantic").ValidationError
+
+    try:
+        if graph_path.suffix == ".gdsp":
+            parse_file = import_module("gen_dsp.graph.dsl").parse_file
+            parsed = parse_file(graph_path)
+            if isinstance(parsed, graph_cls):
+                return parsed
+            message = "parsed file did not produce a Graph"
+            raise ValueError(message)
+
+        text = graph_path.read_text()
+        data = json.loads(text)
+        return graph_cls.model_validate(data)
+    except graph_errors as e:
+        message = f"invalid graph: {e}"
+        raise ValueError(message) from e
+    except validation_error as e:
+        message = f"invalid graph: {e}"
+        raise ValueError(message) from e
+
+
+def _report_validation_block(header: str, errors: list[object]) -> bool:
+    """Print a block of validation errors, returning True when any exist."""
+    if not errors:
+        return False
+    _report_block(header, errors)
+    return True
+
+
+def _report_build_result(
+    result: object,
+    *,
+    show_stderr: bool,
+    show_stdout_tail: bool,
+) -> bool:
+    """Report a builder result and return whether it succeeded."""
+    if result.success:
+        _stdout("Build successful!")
+        if result.output_file:
+            _stdout(f"Output: {result.output_file}")
+        return True
+
+    _stderr("Build failed!")
+    if show_stderr and result.stderr:
+        _stderr(result.stderr.rstrip("\n"))
+    elif show_stdout_tail and result.stdout:
+        lines = result.stdout.strip().split("\n")
+        for line in lines[-20:]:
+            _stderr(line)
+    return False
+
+
+def _print_next_steps(project_dir: Path, platform: str) -> None:
+    """Print follow-up shell commands after generation."""
+    _stdout()
+    _stdout("Next steps:")
+    _stdout(f"  cd {project_dir}")
+    platform_impl = get_platform(platform)
+    for instruction in platform_impl.get_build_instructions():
+        _stdout(f"  {instruction}")
+
+
+def _report_graph_dry_run(
+    args: argparse.Namespace,
+    graph: object,
+    output_dir: Path,
+) -> None:
+    """Print the dry-run summary for graph sources."""
+    _stdout(f"Would create project at: {output_dir}")
+    _stdout(f"  Source: dsp-graph ({args.source.name})")
+    _stdout(f"  Graph: {graph.name}")
+    _stdout(f"  Platform: {args.platform}")
+    _stdout(f"  Inputs: {len(graph.inputs)}")
+    _stdout(f"  Outputs: {len(graph.outputs)}")
+    _stdout(f"  Parameters: {len(graph.params)}")
+    if not args.no_build:
+        _stdout("  Would build after creating")
+
+
+def _report_export_dry_run(
+    args: argparse.Namespace,
+    export_info: object,
+    buffers: list[str] | None,
+    output_dir: Path,
+) -> None:
+    """Print the dry-run summary for export sources."""
+    _stdout(f"Would create project at: {output_dir}")
+    _stdout(f"  Export: {export_info.name}")
+    _stdout(f"  Platform: {args.platform}")
+    if args.board:
+        _stdout(f"  Board: {args.board}")
+    _stdout(f"  Inputs: {export_info.num_inputs}")
+    _stdout(f"  Outputs: {export_info.num_outputs}")
+    _stdout(f"  Parameters: {export_info.num_params}")
+    _stdout(f"  Buffers: {buffers or '(none)'}")
+    if export_info.has_exp2f_issue and not args.no_patch:
+        _stdout("  Would apply exp2f -> exp2 patch")
+    if not args.no_build:
+        _stdout("  Would build after creating")
+
+
+def _validate_export_run_args(args: argparse.Namespace) -> str | None:
+    """Validate export-run flags that are independent of project parsing."""
+    if args.board and args.platform not in ("daisy", "circle"):
+        return "Error: --board is only valid for daisy and circle"
+    if args.voices < 1:
+        return "Error: --voices must be >= 1"
+    if args.voices > 1 and args.no_midi:
+        return "Error: --voices > 1 requires MIDI (incompatible with --no-midi)"
+    return None
+
+
+def _prepare_export_inputs(
+    args: argparse.Namespace,
+    export_path: Path,
+) -> tuple[object, list[str]] | None:
+    """Parse export metadata and validate argument combinations."""
+    if args.name is None:
+        args.name = export_path.name
+        if not args.name:
+            _stderr("Error: could not infer name from export path")
+            return None
+
+    try:
+        parser = GenExportParser(export_path)
+        export_info = parser.parse()
+    except GenExtError as e:
+        _stderr(f"Error parsing export: {e}")
+        return None
+
+    buffers = args.buffers or export_info.buffers
+    invalid = parser.validate_buffer_names(buffers)
+    if invalid:
+        _stderr(f"Error: Invalid buffer names: {invalid}")
+        _stderr("Buffer names must be valid C identifiers.")
+        return None
+
+    error = _validate_export_run_args(args)
+    if error is not None:
+        _stderr(error)
+        return None
+
+    return export_info, buffers
+
+
+def _report_graph_project_created(
+    args: argparse.Namespace,
+    graph: object,
+    project_dir: Path,
+) -> None:
+    """Report graph project creation."""
+    _stdout(f"Project created at: {project_dir}")
+    _stdout("  Source: dsp-graph")
+    _stdout(f"  Platform: {args.platform}")
+    if graph.params:
+        _stdout(f"  Parameters: {', '.join(p.name for p in graph.params)}")
+
+
+def _report_export_project_created(
+    args: argparse.Namespace,
+    buffers: list[str] | None,
+    project_dir: Path,
+) -> None:
+    """Report export project creation."""
+    _stdout(f"Project created at: {project_dir}")
+    _stdout(f"  External name: {args.name}~")
+    _stdout(f"  Platform: {args.platform}")
+    if buffers:
+        _stdout(f"  Buffers: {', '.join(buffers)}")
+
+
+def _prepare_default_graph_run(
+    args: argparse.Namespace,
+    graph_path: Path,
+) -> tuple[object, ProjectConfig, Path] | None:
+    """Prepare the graph-source default-command run."""
+    if not _require_graph_support():
+        return None
+
     if args.name is None:
         args.name = graph_path.stem
         if not args.name:
-            print("Error: could not infer name from graph file", file=sys.stderr)
-            return 1
+            _stderr("Error: could not infer name from graph file")
+            return None
 
-    # Load graph
     try:
-        if graph_path.suffix == ".gdsp":
-            from gen_dsp.graph.dsl import parse_file as parse_gdsp
+        graph = _load_graph_source(graph_path)
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError) as e:
+        _stderr(f"Error loading graph: {e}")
+        return None
 
-            parsed = parse_gdsp(graph_path)
-            assert isinstance(parsed, Graph)
-            graph = parsed
-        else:
-            text = graph_path.read_text()
-            data = json.loads(text)
-            graph = Graph.model_validate(data)
-    except Exception as e:
-        print(f"Error loading graph: {e}", file=sys.stderr)
-        return 1
+    validate_graph = import_module("gen_dsp.graph.validate").validate_graph
+    if _report_validation_block(
+        "Graph validation errors:",
+        validate_graph(graph),
+    ):
+        return None
 
-    errors = validate_graph(graph)
-    if errors:
-        print("Graph validation errors:", file=sys.stderr)
-        for err in errors:
-            print(f"  - {err}", file=sys.stderr)
-        return 1
-
-    # Create config
     config = ProjectConfig(
         name=args.name,
         platform=args.platform,
@@ -425,120 +595,25 @@ def _cmd_default_graph(args: argparse.Namespace, graph_path: Path) -> int:
         shared_cache=not getattr(args, "no_shared_cache", False),
         cache_dir=getattr(args, "cache_dir", None),
     )
-
-    config_errors = config.validate()
-    if config_errors:
-        print("Configuration errors:", file=sys.stderr)
-        for config_err in config_errors:
-            print(f"  - {config_err}", file=sys.stderr)
-        return 1
+    if _report_validation_block("Configuration errors:", config.validate()):
+        return None
 
     output_dir = (
-        args.output
-        if args.output
-        else Path.cwd() / "build" / f"{args.name}_{args.platform}"
+        args.output or Path.cwd() / "build" / f"{args.name}_{args.platform}"
     )
-
-    if args.dry_run:
-        print(f"Would create project at: {output_dir}")
-        print(f"  Source: dsp-graph ({graph_path.name})")
-        print(f"  Graph: {graph.name}")
-        print(f"  Platform: {args.platform}")
-        print(f"  Inputs: {len(graph.inputs)}")
-        print(f"  Outputs: {len(graph.outputs)}")
-        print(f"  Parameters: {len(graph.params)}")
-        if not args.no_build:
-            print("  Would build after creating")
-        return 0
-
-    # Generate project
-    try:
-        generator = ProjectGenerator.from_graph(graph, config)
-        project_dir = generator.generate(output_dir)
-        print(f"Project created at: {project_dir}")
-        print("  Source: dsp-graph")
-        print(f"  Platform: {args.platform}")
-        if graph.params:
-            print(f"  Parameters: {', '.join(p.name for p in graph.params)}")
-    except Exception as e:
-        print(f"Error creating project: {e}", file=sys.stderr)
-        return 1
-
-    # Build unless --no-build or --dry-run
-    if not args.no_build:
-        try:
-            builder = Builder(project_dir)
-            result = builder.build(target_platform=args.platform)
-            if result.success:
-                print("Build successful!")
-                if result.output_file:
-                    print(f"Output: {result.output_file}")
-            else:
-                print("Build failed!", file=sys.stderr)
-                if result.stderr:
-                    print(result.stderr, file=sys.stderr)
-                return 1
-        except GenExtError as e:
-            print(f"Build error: {e}", file=sys.stderr)
-            return 1
-    else:
-        print()
-        print("Next steps:")
-        print(f"  cd {project_dir}")
-        platform_impl = get_platform(args.platform)
-        for instruction in platform_impl.get_build_instructions():
-            print(f"  {instruction}")
-
-    return 0
+    return graph, config, output_dir
 
 
-def _cmd_default_export(args: argparse.Namespace, export_path: Path) -> int:
-    """Handle default command with a gen~ export directory source."""
-    # Infer name
-    if args.name is None:
-        args.name = export_path.name
-        if not args.name:
-            print("Error: could not infer name from export path", file=sys.stderr)
-            return 1
+def _prepare_default_export_run(
+    args: argparse.Namespace,
+    export_path: Path,
+) -> tuple[object, ProjectConfig, list[str], Path] | None:
+    """Prepare the export-source default-command run."""
+    prepared = _prepare_export_inputs(args, export_path)
+    if prepared is None:
+        return None
 
-    # Parse the export
-    try:
-        parser = GenExportParser(export_path)
-        export_info = parser.parse()
-    except GenExtError as e:
-        print(f"Error parsing export: {e}", file=sys.stderr)
-        return 1
-
-    # Determine buffers
-    buffers = args.buffers if args.buffers else export_info.buffers
-
-    # Validate buffer names
-    invalid = parser.validate_buffer_names(buffers)
-    if invalid:
-        print(f"Error: Invalid buffer names: {invalid}", file=sys.stderr)
-        print("Buffer names must be valid C identifiers.", file=sys.stderr)
-        return 1
-
-    # Reject --board on non-embedded platforms
-    if args.board and args.platform not in ("daisy", "circle"):
-        print(
-            "Error: --board is only valid for daisy and circle",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Validate --voices
-    if args.voices < 1:
-        print("Error: --voices must be >= 1", file=sys.stderr)
-        return 1
-    if args.voices > 1 and args.no_midi:
-        print(
-            "Error: --voices > 1 requires MIDI (incompatible with --no-midi)",
-            file=sys.stderr,
-        )
-        return 1
-
-    # Create config
+    export_info, buffers = prepared
     config = ProjectConfig(
         name=args.name,
         platform=args.platform,
@@ -556,77 +631,125 @@ def _cmd_default_export(args: argparse.Namespace, export_path: Path) -> int:
         num_voices=args.voices,
         inputs_as_params=args.inputs_as_params,
     )
+    if _report_validation_block("Configuration errors:", config.validate()):
+        return None
 
-    # Validate
-    errors = config.validate()
-    if errors:
-        print("Configuration errors:", file=sys.stderr)
-        for err in errors:
-            print(f"  - {err}", file=sys.stderr)
-        return 1
-
-    # Determine output directory
     output_dir = (
-        args.output
-        if args.output
-        else Path.cwd() / "build" / f"{args.name}_{args.platform}"
+        args.output or Path.cwd() / "build" / f"{args.name}_{args.platform}"
     )
+    return export_info, config, buffers, output_dir
 
-    if args.dry_run:
-        print(f"Would create project at: {output_dir}")
-        print(f"  Export: {export_info.name}")
-        print(f"  Platform: {args.platform}")
-        if args.board:
-            print(f"  Board: {args.board}")
-        print(f"  Inputs: {export_info.num_inputs}")
-        print(f"  Outputs: {export_info.num_outputs}")
-        print(f"  Parameters: {export_info.num_params}")
-        print(f"  Buffers: {buffers if buffers else '(none)'}")
-        if export_info.has_exp2f_issue and not args.no_patch:
-            print("  Would apply exp2f -> exp2 patch")
-        if not args.no_build:
-            print("  Would build after creating")
+
+def _generate_project(
+    generator: object,
+    output_dir: Path,
+    error_label: str,
+) -> Path | None:
+    """Generate a project directory from a prepared generator."""
+    try:
+        return generator.generate(output_dir)
+    except (GenExtError, OSError, ValueError) as e:
+        _stderr(f"{error_label}: {e}")
+        return None
+
+
+def _build_or_skip(project_dir: Path, platform: str, *, no_build: bool) -> int:
+    """Build a project or print the next steps."""
+    if no_build:
+        _print_next_steps(project_dir, platform)
         return 0
 
-    # Generate project
     try:
-        generator = ProjectGenerator(export_info, config)
-        project_dir = generator.generate(output_dir)
-        print(f"Project created at: {project_dir}")
-        print(f"  External name: {args.name}~")
-        print(f"  Platform: {args.platform}")
-        if buffers:
-            print(f"  Buffers: {', '.join(buffers)}")
+        builder = Builder(project_dir)
+        result = builder.build(target_platform=platform)
     except GenExtError as e:
-        print(f"Error creating project: {e}", file=sys.stderr)
+        _stderr(f"Build error: {e}")
+        return 1
+    if not _report_build_result(
+        result,
+        show_stderr=True,
+        show_stdout_tail=False,
+    ):
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
+
+def _cmd_default(argv: list[str]) -> int:
+    """Handle the default command: <source> -p <platform> [flags]."""
+    parser = _make_default_parser()
+    args = parser.parse_args(argv)
+
+    source = args.source.resolve()
+
+    # Auto-detect source type
+    if source.is_file() and source.suffix in (".gdsp", ".json"):
+        return _cmd_default_graph(args, source)
+    if source.is_dir():
+        return _cmd_default_export(args, source)
+    _stderr(f"Error: source not found or unrecognized type: {source}")
+    _stderr("Expected: directory (gen~ export), .gdsp file, or .json file")
+    return 1
+
+
+def _cmd_default_graph(args: argparse.Namespace, graph_path: Path) -> int:
+    """Handle default command with a graph file source."""
+    prepared = _prepare_default_graph_run(args, graph_path)
+    if prepared is None:
         return 1
 
-    # Build unless --no-build or --dry-run
-    if not args.no_build:
-        try:
-            builder = Builder(project_dir)
-            result = builder.build(target_platform=args.platform)
-            if result.success:
-                print("Build successful!")
-                if result.output_file:
-                    print(f"Output: {result.output_file}")
-            else:
-                print("Build failed!", file=sys.stderr)
-                if result.stderr:
-                    print(result.stderr, file=sys.stderr)
-                return 1
-        except GenExtError as e:
-            print(f"Build error: {e}", file=sys.stderr)
-            return 1
-    else:
-        print()
-        print("Next steps:")
-        print(f"  cd {project_dir}")
-        platform_impl = get_platform(args.platform)
-        for instruction in platform_impl.get_build_instructions():
-            print(f"  {instruction}")
+    graph, config, output_dir = prepared
+    if args.dry_run:
+        _report_graph_dry_run(args, graph, output_dir)
+        return 0
 
-    return 0
+    try:
+        generator = ProjectGenerator.from_graph(graph, config)
+        project_dir = _generate_project(
+            generator,
+            output_dir,
+            "Error creating project",
+        )
+    except (GenExtError, OSError, ValueError) as e:
+        _stderr(f"Error creating project: {e}")
+        return 1
+    if project_dir is None:
+        return 1
+
+    _report_graph_project_created(args, graph, project_dir)
+    return _build_or_skip(project_dir, args.platform, no_build=args.no_build)
+
+
+def _cmd_default_export(args: argparse.Namespace, export_path: Path) -> int:
+    """Handle default command with a gen~ export directory source."""
+    prepared = _prepare_default_export_run(args, export_path)
+    if prepared is None:
+        return 1
+
+    export_info, config, buffers, output_dir = prepared
+    if args.dry_run:
+        _report_export_dry_run(args, export_info, buffers, output_dir)
+        return 0
+
+    try:
+        generator = ProjectGenerator(export_info, config)
+        project_dir = _generate_project(
+            generator,
+            output_dir,
+            "Error creating project",
+        )
+    except (GenExtError, OSError, ValueError) as e:
+        _stderr(f"Error creating project: {e}")
+        return 1
+    if project_dir is None:
+        return 1
+
+    _report_export_project_created(args, buffers, project_dir)
+    return _build_or_skip(project_dir, args.platform, no_build=args.no_build)
 
 
 def cmd_build(args: argparse.Namespace) -> int:
@@ -634,7 +757,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     project_path = args.project_path.resolve()
 
     if not project_path.is_dir():
-        print(f"Error: Project directory not found: {project_path}", file=sys.stderr)
+        _stderr(f"Error: Project directory not found: {project_path}")
         return 1
 
     try:
@@ -644,24 +767,19 @@ def cmd_build(args: argparse.Namespace) -> int:
             clean=args.clean,
             verbose=args.verbose,
         )
-
-        if result.success:
-            print("Build successful!")
-            if result.output_file:
-                print(f"Output: {result.output_file}")
-            return 0
-        else:
-            print("Build failed!", file=sys.stderr)
-            if not args.verbose and result.stderr:
-                print(result.stderr, file=sys.stderr)
-            elif not args.verbose and result.stdout:
-                lines = result.stdout.strip().split("\n")
-                for line in lines[-20:]:
-                    print(line, file=sys.stderr)
-            return 1
     except GenExtError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _stderr(f"Error: {e}")
         return 1
+    else:
+        return (
+            0
+            if _report_build_result(
+                result,
+                show_stderr=not args.verbose,
+                show_stdout_tail=not args.verbose,
+            )
+            else 1
+        )
 
 
 def cmd_detect(args: argparse.Namespace) -> int:
@@ -672,31 +790,31 @@ def cmd_detect(args: argparse.Namespace) -> int:
         parser = GenExportParser(export_path)
         info = parser.parse()
     except GenExtError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _stderr(f"Error: {e}")
         return 1
-
-    if args.json:
-        data = {
-            "name": info.name,
-            "path": str(info.path),
-            "num_inputs": info.num_inputs,
-            "num_outputs": info.num_outputs,
-            "num_params": info.num_params,
-            "buffers": info.buffers,
-            "has_exp2f_issue": info.has_exp2f_issue,
-            "cpp_file": str(info.cpp_path) if info.cpp_path else None,
-            "h_file": str(info.h_path) if info.h_path else None,
-        }
-        print(json.dumps(data, indent=2))
     else:
-        print(f"Gen~ Export: {info.name}")
-        print(f"  Path: {info.path}")
-        print(f"  Signal inputs: {info.num_inputs}")
-        print(f"  Signal outputs: {info.num_outputs}")
-        print(f"  Parameters: {info.num_params}")
-        print(f"  Buffers: {info.buffers if info.buffers else '(none detected)'}")
-        if info.has_exp2f_issue:
-            print("  Patch needed: exp2f -> exp2 (macOS compatibility)")
+        if args.json:
+            data = {
+                "name": info.name,
+                "path": str(info.path),
+                "num_inputs": info.num_inputs,
+                "num_outputs": info.num_outputs,
+                "num_params": info.num_params,
+                "buffers": info.buffers,
+                "has_exp2f_issue": info.has_exp2f_issue,
+                "cpp_file": str(info.cpp_path) if info.cpp_path else None,
+                "h_file": str(info.h_path) if info.h_path else None,
+            }
+            _stdout(json.dumps(data, indent=2))
+        else:
+            _stdout(f"Gen~ Export: {info.name}")
+            _stdout(f"  Path: {info.path}")
+            _stdout(f"  Signal inputs: {info.num_inputs}")
+            _stdout(f"  Signal outputs: {info.num_outputs}")
+            _stdout(f"  Parameters: {info.num_params}")
+            _stdout(f"  Buffers: {info.buffers or '(none detected)'}")
+            if info.has_exp2f_issue:
+                _stdout("  Patch needed: exp2f -> exp2 (macOS compatibility)")
 
     return 0
 
@@ -706,7 +824,7 @@ def cmd_patch(args: argparse.Namespace) -> int:
     target_path = args.target_path.resolve()
 
     if not target_path.is_dir():
-        print(f"Error: Directory not found: {target_path}", file=sys.stderr)
+        _stderr(f"Error: Directory not found: {target_path}")
         return 1
 
     patcher = Patcher(target_path)
@@ -714,43 +832,45 @@ def cmd_patch(args: argparse.Namespace) -> int:
     if args.dry_run:
         needed = patcher.check_patches_needed()
         if not any(needed.values()):
-            print("No patches needed.")
+            _stdout("No patches needed.")
             return 0
 
-        print("Patches that would be applied:")
+        _stdout("Patches that would be applied:")
         for name, is_needed in needed.items():
             if is_needed:
-                print(f"  - {name}")
+                _stdout(f"  - {name}")
         return 0
 
     results = patcher.apply_all()
 
     if not results:
-        print("No patches needed or applicable.")
+        _stdout("No patches needed or applicable.")
         return 0
 
     for result in results:
         if result.applied:
-            print(f"Applied: {result.patch_name}")
-            print(f"  File: {result.file_path}")
-            print(f"  {result.message}")
+            _stdout(f"Applied: {result.patch_name}")
+            _stdout(f"  File: {result.file_path}")
+            _stdout(f"  {result.message}")
         else:
-            print(f"Skipped: {result.patch_name}")
-            print(f"  {result.message}")
+            _stdout(f"Skipped: {result.patch_name}")
+            _stdout(f"  {result.message}")
 
     return 0
 
 
-def cmd_list(args: argparse.Namespace) -> int:
+def cmd_list(_args: argparse.Namespace) -> int:
     """Handle the list command."""
     for name in list_platforms():
-        print(name)
+        _stdout(name)
     return 0
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
     """Handle the manifest command."""
-    from gen_dsp.core.manifest import manifest_from_export_info
+    manifest_from_export_info = import_module(
+        "gen_dsp.core.manifest"
+    ).manifest_from_export_info
 
     export_path = args.export_path.resolve()
 
@@ -758,34 +878,39 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         parser = GenExportParser(export_path)
         export_info = parser.parse()
     except GenExtError as e:
-        print(f"Error parsing export: {e}", file=sys.stderr)
+        _stderr(f"Error parsing export: {e}")
         return 1
+    else:
+        buffers = args.buffers or export_info.buffers
+        manifest = manifest_from_export_info(
+            export_info,
+            buffers,
+            Platform.GENEXT_VERSION,
+        )
+        _stdout(manifest.to_json())
+        return 0
 
-    buffers = args.buffers if args.buffers else export_info.buffers
 
-    manifest = manifest_from_export_info(export_info, buffers, Platform.GENEXT_VERSION)
-    print(manifest.to_json())
-    return 0
-
-
-def cmd_cache(args: argparse.Namespace) -> int:
+def cmd_cache(_args: argparse.Namespace) -> int:
     """Handle the cache command."""
-    import os
-
-    from gen_dsp.core.cache import get_cache_dir
-    from gen_dsp.platforms.daisy import _resolve_libdaisy_dir, LIBDAISY_VERSION
-    from gen_dsp.platforms.vcvrack import _resolve_rack_dir
+    get_cache_dir = import_module("gen_dsp.core.cache").get_cache_dir
+    daisy_module = import_module("gen_dsp.platforms.daisy")
+    libdaisy_version = daisy_module.LIBDAISY_VERSION
+    resolve_libdaisy_dir = daisy_module.__dict__["_resolve_libdaisy_dir"]
+    resolve_rack_dir = import_module("gen_dsp.platforms.vcvrack").__dict__[
+        "_resolve_rack_dir"
+    ]
 
     env_cache = os.environ.get("GEN_DSP_CACHE_DIR")
     if env_cache:
         cache_dir = Path(env_cache)
-        print(f"Cache directory: {cache_dir}  (GEN_DSP_CACHE_DIR)")
+        _stdout(f"Cache directory: {cache_dir}  (GEN_DSP_CACHE_DIR)")
     else:
         cache_dir = get_cache_dir()
-        print(f"Cache directory: {cache_dir}")
-    print()
+        _stdout(f"Cache directory: {cache_dir}")
+    _stdout()
 
-    print("FetchContent (clap, lv2, sc, vst3):")
+    _stdout("FetchContent (clap, lv2, sc, vst3):")
     if cache_dir.is_dir():
         src_dirs = sorted(
             d.name
@@ -797,52 +922,50 @@ def cmd_cache(args: argparse.Namespace) -> int:
         if src_dirs:
             for name in src_dirs:
                 sdk_name = name.removesuffix("-src")
-                print(f"  {sdk_name}  ({cache_dir / name})")
+                _stdout(f"  {sdk_name}  ({cache_dir / name})")
         else:
-            print("  (empty)")
+            _stdout("  (empty)")
     else:
-        print("  (not created)")
-    print()
+        _stdout("  (not created)")
+    _stdout()
 
-    rack_dir = _resolve_rack_dir()
+    rack_dir = resolve_rack_dir()
     rack_present = (rack_dir / "Makefile").is_file()
-    print("Rack SDK (vcvrack):")
-    print(f"  Path: {rack_dir}")
-    print(f"  Status: {'present' if rack_present else 'not downloaded'}")
-    print()
+    _stdout("Rack SDK (vcvrack):")
+    _stdout(f"  Path: {rack_dir}")
+    _stdout(f"  Status: {'present' if rack_present else 'not downloaded'}")
+    _stdout()
 
-    libdaisy_dir = _resolve_libdaisy_dir()
+    libdaisy_dir = resolve_libdaisy_dir()
     libdaisy_present = (libdaisy_dir / "core" / "Makefile").is_file()
     libdaisy_built = (libdaisy_dir / "build" / "libdaisy.a").is_file()
-    print(f"libDaisy {LIBDAISY_VERSION} (daisy):")
-    print(f"  Path: {libdaisy_dir}")
+    _stdout(f"libDaisy {libdaisy_version} (daisy):")
+    _stdout(f"  Path: {libdaisy_dir}")
     if libdaisy_built:
-        print("  Status: built")
+        _stdout("  Status: built")
     elif libdaisy_present:
-        print("  Status: cloned (not built)")
+        _stdout("  Status: cloned (not built)")
     else:
-        print("  Status: not cloned")
+        _stdout("  Status: not cloned")
 
     return 0
 
 
 def cmd_chain(args: argparse.Namespace) -> int:
     """Handle the chain command (multi-plugin chain mode, Circle only)."""
-    from gen_dsp.core.graph import (
-        parse_graph,
-        validate_linear_chain,
-        validate_dag,
-    )
-    from gen_dsp.core.graph_init import (
-        resolve_export_dirs,
-        init_chain_linear,
-        init_chain_dag,
-    )
+    graph_module = import_module("gen_dsp.core.graph")
+    parse_graph = graph_module.parse_graph
+    validate_dag = graph_module.validate_dag
+    validate_linear_chain = graph_module.validate_linear_chain
+    graph_init_module = import_module("gen_dsp.core.graph_init")
+    init_chain_dag = graph_init_module.init_chain_dag
+    init_chain_linear = graph_init_module.init_chain_linear
+    resolve_export_dirs = graph_init_module.resolve_export_dirs
 
     if args.platform != "circle":
-        print(
-            "Error: chain command is currently only supported for the circle platform",
-            file=sys.stderr,
+        _stderr(
+            "Error: chain command is currently only supported for the "
+            "circle platform"
         )
         return 1
 
@@ -851,46 +974,47 @@ def cmd_chain(args: argparse.Namespace) -> int:
     try:
         graph = parse_graph(graph_path)
     except GenExtError as e:
-        print(f"Error parsing graph: {e}", file=sys.stderr)
+        _stderr(f"Error parsing graph: {e}")
         return 1
+    else:
+        linear_errors = validate_linear_chain(graph)
+        is_linear = len(linear_errors) == 0
 
-    linear_errors = validate_linear_chain(graph)
-    is_linear = len(linear_errors) == 0
+        if not is_linear:
+            dag_errors = validate_dag(graph)
+            if dag_errors:
+                _report_block("Graph validation errors:", dag_errors)
+                return 1
 
-    if not is_linear:
-        dag_errors = validate_dag(graph)
-        if dag_errors:
-            print("Graph validation errors:", file=sys.stderr)
-            for err in dag_errors:
-                print(f"  - {err}", file=sys.stderr)
-            return 1
-
-    export_dirs = resolve_export_dirs(args.export_path.resolve(), graph, args.exports)
-
-    output_dir = args.output if args.output else Path.cwd() / "build" / args.name
-    output_dir = Path(output_dir).resolve()
-
-    config = ProjectConfig(
-        name=args.name,
-        platform="circle",
-        buffers=[],
-        apply_patches=not args.no_patch,
-        output_dir=args.output,
-        board=args.board,
-    )
-
-    if is_linear:
-        return init_chain_linear(
+        export_dirs = resolve_export_dirs(
+            args.export_path.resolve(),
             graph,
-            export_dirs,
-            output_dir,
-            args.name,
-            config,
+            args.exports,
+        )
+
+        output_dir = args.output or Path.cwd() / "build" / args.name
+        output_dir = Path(output_dir).resolve()
+
+        config = ProjectConfig(
+            name=args.name,
+            platform="circle",
+            buffers=[],
             apply_patches=not args.no_patch,
-            dry_run=args.dry_run,
+            output_dir=args.output,
             board=args.board,
         )
-    else:
+
+        if is_linear:
+            return init_chain_linear(
+                graph,
+                export_dirs,
+                output_dir,
+                args.name,
+                config,
+                apply_patches=not args.no_patch,
+                dry_run=args.dry_run,
+                board=args.board,
+            )
         return init_chain_dag(
             graph,
             export_dirs,
@@ -920,24 +1044,23 @@ def _dispatch_subcommand(argv: list[str]) -> int:
 
     # Add graph subcommand handlers if available
     try:
-        from gen_dsp.graph.cli import cmd_compile, cmd_validate, cmd_dot, cmd_simulate
-
-        handlers["compile"] = cmd_compile
-        handlers["validate"] = cmd_validate
-        handlers["dot"] = cmd_dot
-        handlers["sim"] = cmd_simulate
+        graph_cli = import_module("gen_dsp.graph.cli")
     except ImportError:
         pass
+    else:
+        handlers["compile"] = graph_cli.cmd_compile
+        handlers["validate"] = graph_cli.cmd_validate
+        handlers["dot"] = graph_cli.cmd_dot
+        handlers["sim"] = graph_cli.cmd_simulate
 
     handler = handlers.get(args.command)
     if handler:
         return handler(args)
-    else:
-        _print_help()
-        return 1
+    _print_help()
+    return 1
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
     argv = argv if argv is not None else sys.argv[1:]
 
@@ -946,13 +1069,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if argv[0] in ("-V", "--version"):
-        print(f"gen-dsp {__version__}")
+        _stdout(f"gen-dsp {__version__}")
         return 0
 
     if argv[0] in SUBCOMMANDS:
         return _dispatch_subcommand(argv)
-    else:
-        return _cmd_default(argv)
+    return _cmd_default(argv)
 
 
 if __name__ == "__main__":

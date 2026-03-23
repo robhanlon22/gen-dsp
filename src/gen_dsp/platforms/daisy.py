@@ -24,19 +24,18 @@ code that reads hardware knobs and scales to gen~ parameter ranges.
 
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
+from gen_dsp.core.cache import get_cache_dir
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
+from gen_dsp.platforms.command import run_command as run_external_command
 from gen_dsp.templates import get_daisy_templates_dir
-
 
 # libDaisy version (latest stable, well-tested)
 LIBDAISY_VERSION = "v7.1.0"
@@ -172,15 +171,94 @@ _LIBDAISY_CACHE_SUBDIR = "libdaisy-src"
 _LIBDAISY_DIR_NAME = "libDaisy"
 
 
+@dataclass(frozen=True)
+class DaisyMakefileContext:
+    """Inputs for rendering the Daisy Makefile template."""
+
+    gen_name: str
+    lib_name: str
+    num_inputs: int
+    num_outputs: int
+    num_params: int
+    default_libdaisy_dir: str
+    remap_defines: str = ""
+
+
 def _get_default_libdaisy_dir() -> Path:
     """Return the default cached libDaisy path (OS-appropriate)."""
-    from gen_dsp.core.cache import get_cache_dir
-
     return get_cache_dir() / _LIBDAISY_CACHE_SUBDIR / _LIBDAISY_DIR_NAME
 
 
+def _libdaisy_rules_mk_exists(libdaisy_dir: Path) -> bool:
+    """Return True when the libDaisy source tree exists."""
+    return (libdaisy_dir / "core" / "Makefile").is_file()
+
+
+def _libdaisy_library_exists(libdaisy_dir: Path) -> bool:
+    """Return True when libdaisy.a has already been built."""
+    return (libdaisy_dir / "build" / "libdaisy.a").is_file()
+
+
+def _libdaisy_ready(libdaisy_dir: Path) -> bool:
+    """Return True when the library is ready for use."""
+    return _libdaisy_rules_mk_exists(libdaisy_dir) and _libdaisy_library_exists(
+        libdaisy_dir
+    )
+
+
+def _check_libdaisy_prerequisites() -> None:
+    """Verify host tools required for libDaisy are installed."""
+    if not shutil.which("git"):
+        msg = "git is required to clone libDaisy. Install git and ensure it is on PATH."
+        raise BuildError(msg)
+
+    if not shutil.which("arm-none-eabi-gcc"):
+        msg = (
+            "arm-none-eabi-gcc is required to build for Daisy. "
+            "Download the ARM GNU toolchain from:\n"
+            "  https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads\n"
+            "Select the 'arm-none-eabi' variant for your host OS, extract it,\n"
+            "and add its bin/ directory to your PATH."
+        )
+        raise BuildError(msg)
+
+
+def _clone_libdaisy(libdaisy_dir: Path, *, verbose: bool) -> None:
+    """Clone libDaisy into the cache directory."""
+    libdaisy_dir.parent.mkdir(parents=True, exist_ok=True)
+    result = run_external_command(
+        [
+            "git",
+            "clone",
+            "--recurse-submodules",
+            "--depth",
+            "1",
+            "--branch",
+            LIBDAISY_VERSION,
+            _LIBDAISY_CLONE_URL,
+            str(libdaisy_dir),
+        ],
+        verbose=verbose,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if result.returncode != 0:
+        stderr = result.stderr or result.stdout
+        msg = f"Failed to clone libDaisy: {stderr or result.returncode}"
+        raise BuildError(msg)
+
+
+def _build_libdaisy(libdaisy_dir: Path, *, verbose: bool) -> None:
+    """Build libdaisy.a in the cached source tree."""
+    result = run_external_command(["make", "-j"], cwd=libdaisy_dir, verbose=verbose)
+    if result.returncode != 0:
+        stderr = result.stderr or result.stdout
+        msg = f"Failed to build libDaisy: {stderr or result.returncode}"
+        raise BuildError(msg)
+
+
 def _resolve_libdaisy_dir() -> Path:
-    """Resolve LIBDAISY_DIR using the priority chain.
+    """
+    Resolve LIBDAISY_DIR using the priority chain.
 
     1. LIBDAISY_DIR env var
     2. GEN_DSP_CACHE_DIR env var + libdaisy-src/libDaisy
@@ -197,8 +275,9 @@ def _resolve_libdaisy_dir() -> Path:
     return _get_default_libdaisy_dir()
 
 
-def ensure_libdaisy(libdaisy_dir: Optional[Path] = None, verbose: bool = False) -> Path:
-    """Ensure libDaisy is available, cloning and building if necessary.
+def ensure_libdaisy(libdaisy_dir: Path | None = None, *, verbose: bool = False) -> Path:
+    """
+    Ensure libDaisy is available, cloning and building if necessary.
 
     Args:
         libdaisy_dir: Explicit path. If None, resolves via priority chain.
@@ -210,88 +289,35 @@ def ensure_libdaisy(libdaisy_dir: Optional[Path] = None, verbose: bool = False) 
     Raises:
         BuildError: If clone or build fails, or if git/arm-none-eabi-gcc
                     is not available.
+
     """
     if libdaisy_dir is None:
         libdaisy_dir = _resolve_libdaisy_dir()
 
-    # Already present and built?
-    if (libdaisy_dir / "core" / "Makefile").is_file() and (
-        libdaisy_dir / "build" / "libdaisy.a"
-    ).is_file():
+    if _libdaisy_ready(libdaisy_dir):
         return libdaisy_dir
 
-    # Check prerequisites
-    if not shutil.which("git"):
-        raise BuildError(
-            "git is required to clone libDaisy. Install git and ensure it is on PATH."
-        )
+    _check_libdaisy_prerequisites()
 
-    if not shutil.which("arm-none-eabi-gcc"):
-        raise BuildError(
-            "arm-none-eabi-gcc is required to build for Daisy. "
-            "Download the ARM GNU toolchain from:\n"
-            "  https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads\n"
-            "Select the 'arm-none-eabi' variant for your host OS, extract it,\n"
-            "and add its bin/ directory to your PATH."
-        )
+    if not _libdaisy_rules_mk_exists(libdaisy_dir):
+        _clone_libdaisy(libdaisy_dir, verbose=verbose)
 
-    # Clone if not present
-    if not (libdaisy_dir / "core" / "Makefile").is_file():
-        cache_parent = libdaisy_dir.parent
-        cache_parent.mkdir(parents=True, exist_ok=True)
+    if not _libdaisy_library_exists(libdaisy_dir):
+        _build_libdaisy(libdaisy_dir, verbose=verbose)
 
-        if verbose:
-            print(f"Cloning libDaisy {LIBDAISY_VERSION} from {_LIBDAISY_CLONE_URL} ...")
-
-        try:
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--recurse-submodules",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    LIBDAISY_VERSION,
-                    _LIBDAISY_CLONE_URL,
-                    str(libdaisy_dir),
-                ],
-                check=True,
-                capture_output=not verbose,
-                text=True,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            )
-        except subprocess.CalledProcessError as e:
-            raise BuildError(f"Failed to clone libDaisy: {e}") from e
-
-    # Build libdaisy.a if not already built
-    if not (libdaisy_dir / "build" / "libdaisy.a").is_file():
-        if verbose:
-            print("Building libDaisy ...")
-
-        try:
-            subprocess.run(
-                ["make", "-j"],
-                cwd=libdaisy_dir,
-                check=True,
-                capture_output=not verbose,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            raise BuildError(f"Failed to build libDaisy: {e}") from e
-
-    # Verify
-    if not (libdaisy_dir / "build" / "libdaisy.a").is_file():
-        raise BuildError(
+    if not _libdaisy_library_exists(libdaisy_dir):
+        msg = (
             f"libDaisy build completed but libdaisy.a not found at "
             f"{libdaisy_dir / 'build' / 'libdaisy.a'}"
         )
+        raise BuildError(msg)
 
     return libdaisy_dir
 
 
 def _generate_main_loop_body(board: DaisyBoardConfig, num_params: int) -> str:
-    """Generate C++ code for the main loop body.
+    """
+    Generate C++ code for the main loop body.
 
     For boards with knobs: reads knobs, scales to parameter range, sets params.
     For seed or 0 params: comment-only placeholder.
@@ -346,21 +372,25 @@ class DaisyPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate Daisy firmware project files."""
         templates_dir = get_daisy_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Daisy templates not found at {templates_dir}")
+            msg = f"Daisy templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Resolve board config
         board_key = "seed"
         if config is not None and config.board is not None:
             board_key = config.board
         if board_key not in DAISY_BOARDS:
-            raise ProjectError(
+            msg = (
                 f"Unknown Daisy board '{board_key}'. "
                 f"Valid boards: {', '.join(sorted(DAISY_BOARDS))}"
+            )
+            raise ProjectError(
+                msg
             )
         board = DAISY_BOARDS[board_key]
 
@@ -395,16 +425,19 @@ class DaisyPlatform(Platform):
         remap_defines = build_remap_defines_make(manifest, ["CFLAGS", "CPPFLAGS"])
 
         # Generate Makefile from template
+        makefile_context = DaisyMakefileContext(
+            gen_name=manifest.gen_name,
+            lib_name=lib_name,
+            num_inputs=manifest.num_inputs,
+            num_outputs=manifest.num_outputs,
+            num_params=manifest.num_params,
+            default_libdaisy_dir=default_libdaisy_dir,
+            remap_defines=remap_defines,
+        )
         self._generate_makefile(
             templates_dir / "Makefile.template",
             output_dir / "Makefile",
-            manifest.gen_name,
-            lib_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            manifest.num_params,
-            default_libdaisy_dir,
-            remap_defines=remap_defines,
+            makefile_context,
         )
 
         # Generate gen_buffer.h using base class method
@@ -419,29 +452,24 @@ class DaisyPlatform(Platform):
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        num_params: int,
-        default_libdaisy_dir: str,
-        remap_defines: str = "",
+        context: DaisyMakefileContext,
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
-            raise ProjectError(f"Makefile template not found at {template_path}")
+            msg = f"Makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
         content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
+            gen_name=context.gen_name,
+            lib_name=context.lib_name,
             genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            num_params=num_params,
-            default_libdaisy_dir=default_libdaisy_dir,
-            remap_defines=remap_defines,
+            num_inputs=context.num_inputs,
+            num_outputs=context.num_outputs,
+            num_params=context.num_params,
+            default_libdaisy_dir=context.default_libdaisy_dir,
+            remap_defines=context.remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 
@@ -454,8 +482,9 @@ class DaisyPlatform(Platform):
     ) -> None:
         """Generate gen_ext_daisy.cpp from template with board-specific values."""
         if not template_path.exists():
+            msg = f"gen_ext_daisy.cpp template not found at {template_path}"
             raise ProjectError(
-                f"gen_ext_daisy.cpp template not found at {template_path}"
+                msg
             )
 
         template_content = template_path.read_text(encoding="utf-8")
@@ -481,16 +510,19 @@ class DaisyPlatform(Platform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
-        """Build Daisy firmware using make.
+        """
+        Build Daisy firmware using make.
 
         Automatically clones and builds libDaisy if not already cached.
         """
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         # Ensure libDaisy is available (clones and builds if needed)
         libdaisy_dir = _resolve_libdaisy_dir()
@@ -527,7 +559,7 @@ class DaisyPlatform(Platform):
                 ["make", "clean", f"LIBDAISY_DIR={libdaisy_dir}"], project_dir
             )
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built Daisy firmware binary."""
         build_dir = project_dir / "build"
         if build_dir.is_dir():

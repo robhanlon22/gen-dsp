@@ -1,6 +1,4 @@
-"""
-Entry point for running gen_dsp as a module: python -m gen_dsp
-"""
+"""Entry point for running `python -m gen_dsp`."""
 
 from gen_dsp.cli import main
 

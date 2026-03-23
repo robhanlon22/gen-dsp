@@ -6,16 +6,15 @@ Generates Max/MSP externals using CMake and the max-sdk-base submodule.
 
 import platform as sys_platform
 import shutil
-import subprocess
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.cmake_platform import CMakePlatform
+from gen_dsp.platforms.command import run_command as run_external_command
 from gen_dsp.templates import get_max_templates_dir
 
 
@@ -33,7 +32,7 @@ class MaxPlatform(CMakePlatform):
         system = sys_platform.system().lower()
         if system == "darwin":
             return ".mxo"
-        elif system == "windows":
+        if system == "windows":
             return ".mxe64"
         return ".mxl"
 
@@ -49,12 +48,16 @@ class MaxPlatform(CMakePlatform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate Max/MSP project files."""
+        if config is not None:
+            _ = config
+
         templates_dir = get_max_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Max/MSP templates not found at {templates_dir}")
+            msg = f"Max/MSP templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -117,7 +120,8 @@ class MaxPlatform(CMakePlatform):
                 remap_defines=remap_defines,
             )
         else:
-            raise ProjectError(f"CMakeLists.txt template not found at {template_path}")
+            msg = f"CMakeLists.txt template not found at {template_path}"
+            raise ProjectError(msg)
 
         output_path.write_text(content, encoding="utf-8")
 
@@ -133,34 +137,34 @@ class MaxPlatform(CMakePlatform):
             return True
 
         # Clone max-sdk-base
-        try:
-            result = subprocess.run(
-                ["git", "clone", "--depth", "1", self.MAX_SDK_REPO, str(sdk_dir)],
-                capture_output=True,
-                text=True,
-                cwd=project_dir,
-            )
-            return result.returncode == 0
-        except FileNotFoundError:
-            return False
+        result = run_external_command(
+            ["git", "clone", "--depth", "1", self.MAX_SDK_REPO, str(sdk_dir)],
+            cwd=project_dir,
+        )
+        return result.returncode == 0
 
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build Max/MSP external using CMake."""
         # Ensure max-sdk-base is available before building
         if not self.setup_sdk(project_dir):
-            raise BuildError(
-                "Failed to set up max-sdk-base. Please ensure git is installed and run:\n"
+            msg = (
+                "Failed to set up max-sdk-base. Please ensure git is installed "
+                "and run:\n"
                 f"  cd {project_dir}\n"
                 f"  git clone {self.MAX_SDK_REPO}"
             )
+            raise BuildError(
+                msg
+            )
         return self._build_with_cmake(project_dir, clean, verbose)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built Max external file."""
         # Check externals directory (where max-posttarget.cmake puts output)
         externals_dir = project_dir / "externals"

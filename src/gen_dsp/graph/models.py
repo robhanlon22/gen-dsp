@@ -1,11 +1,13 @@
+"""Pydantic models for DSP graph nodes and graph containers."""
+
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
 # Type alias for node input references: either a node/input/param ID or a literal float.
-Ref = Union[str, float]
+Ref = str | float
 
 
 # ---------------------------------------------------------------------------
@@ -14,6 +16,8 @@ Ref = Union[str, float]
 
 
 class Param(BaseModel):
+    """model."""
+
     name: str
     min: float = 0.0
     max: float = 1.0
@@ -21,10 +25,14 @@ class Param(BaseModel):
 
 
 class AudioInput(BaseModel):
+    """model."""
+
     id: str
 
 
 class AudioOutput(BaseModel):
+    """model."""
+
     id: str
     source: str  # node ID that feeds this output
 
@@ -35,6 +43,8 @@ class AudioOutput(BaseModel):
 
 
 class BinOp(BaseModel):
+    """model."""
+
     id: str
     op: Literal[
         "add",
@@ -68,6 +78,8 @@ class BinOp(BaseModel):
 
 
 class UnaryOp(BaseModel):
+    """model."""
+
     id: str
     op: Literal[
         "sin",
@@ -122,6 +134,8 @@ class UnaryOp(BaseModel):
 
 
 class Clamp(BaseModel):
+    """model."""
+
     id: str
     op: Literal["clamp"] = "clamp"
     a: Ref
@@ -130,12 +144,16 @@ class Clamp(BaseModel):
 
 
 class Constant(BaseModel):
+    """model."""
+
     id: str
     op: Literal["constant"] = "constant"
     value: float
 
 
 class History(BaseModel):
+    """model."""
+
     id: str
     op: Literal["history"] = "history"
     init: float = 0.0
@@ -143,12 +161,16 @@ class History(BaseModel):
 
 
 class DelayLine(BaseModel):
+    """model."""
+
     id: str
     op: Literal["delay"] = "delay"
     max_samples: int = 48000
 
 
 class DelayRead(BaseModel):
+    """model."""
+
     id: str
     op: Literal["delay_read"] = "delay_read"
     delay: str  # delay line ID
@@ -157,6 +179,8 @@ class DelayRead(BaseModel):
 
 
 class DelayWrite(BaseModel):
+    """model."""
+
     id: str
     op: Literal["delay_write"] = "delay_write"
     delay: str  # delay line ID
@@ -164,17 +188,23 @@ class DelayWrite(BaseModel):
 
 
 class Phasor(BaseModel):
+    """model."""
+
     id: str
     op: Literal["phasor"] = "phasor"
     freq: Ref
 
 
 class Noise(BaseModel):
+    """model."""
+
     id: str
     op: Literal["noise"] = "noise"
 
 
 class Compare(BaseModel):
+    """model."""
+
     id: str
     op: Literal["gt", "lt", "gte", "lte", "eq", "neq"]
     a: Ref
@@ -182,6 +212,8 @@ class Compare(BaseModel):
 
 
 class Select(BaseModel):
+    """model."""
+
     id: str
     op: Literal["select"] = "select"
     cond: Ref
@@ -190,6 +222,8 @@ class Select(BaseModel):
 
 
 class Wrap(BaseModel):
+    """model."""
+
     id: str
     op: Literal["wrap"] = "wrap"
     a: Ref
@@ -198,6 +232,8 @@ class Wrap(BaseModel):
 
 
 class Fold(BaseModel):
+    """model."""
+
     id: str
     op: Literal["fold"] = "fold"
     a: Ref
@@ -206,6 +242,8 @@ class Fold(BaseModel):
 
 
 class Mix(BaseModel):
+    """model."""
+
     id: str
     op: Literal["mix"] = "mix"
     a: Ref
@@ -214,12 +252,16 @@ class Mix(BaseModel):
 
 
 class Delta(BaseModel):
+    """model."""
+
     id: str
     op: Literal["delta"] = "delta"
     a: Ref
 
 
 class Change(BaseModel):
+    """model."""
+
     id: str
     op: Literal["change"] = "change"
     a: Ref
@@ -231,6 +273,8 @@ class Change(BaseModel):
 
 
 class Biquad(BaseModel):
+    """model."""
+
     id: str
     op: Literal["biquad"] = "biquad"
     a: Ref
@@ -242,6 +286,8 @@ class Biquad(BaseModel):
 
 
 class SVF(BaseModel):
+    """model."""
+
     id: str
     op: Literal["svf"] = "svf"
     a: Ref
@@ -251,6 +297,8 @@ class SVF(BaseModel):
 
 
 class OnePole(BaseModel):
+    """model."""
+
     id: str
     op: Literal["onepole"] = "onepole"
     a: Ref
@@ -258,12 +306,16 @@ class OnePole(BaseModel):
 
 
 class DCBlock(BaseModel):
+    """model."""
+
     id: str
     op: Literal["dcblock"] = "dcblock"
     a: Ref
 
 
 class Allpass(BaseModel):
+    """model."""
+
     id: str
     op: Literal["allpass"] = "allpass"
     a: Ref
@@ -276,24 +328,32 @@ class Allpass(BaseModel):
 
 
 class SinOsc(BaseModel):
+    """model."""
+
     id: str
     op: Literal["sinosc"] = "sinosc"
     freq: Ref
 
 
 class TriOsc(BaseModel):
+    """model."""
+
     id: str
     op: Literal["triosc"] = "triosc"
     freq: Ref
 
 
 class SawOsc(BaseModel):
+    """model."""
+
     id: str
     op: Literal["sawosc"] = "sawosc"
     freq: Ref
 
 
 class PulseOsc(BaseModel):
+    """model."""
+
     id: str
     op: Literal["pulseosc"] = "pulseosc"
     freq: Ref
@@ -306,6 +366,8 @@ class PulseOsc(BaseModel):
 
 
 class SampleHold(BaseModel):
+    """model."""
+
     id: str
     op: Literal["sample_hold"] = "sample_hold"
     a: Ref
@@ -313,6 +375,8 @@ class SampleHold(BaseModel):
 
 
 class Latch(BaseModel):
+    """model."""
+
     id: str
     op: Literal["latch"] = "latch"
     a: Ref
@@ -320,6 +384,8 @@ class Latch(BaseModel):
 
 
 class Accum(BaseModel):
+    """model."""
+
     id: str
     op: Literal["accum"] = "accum"
     incr: Ref
@@ -327,6 +393,8 @@ class Accum(BaseModel):
 
 
 class Counter(BaseModel):
+    """model."""
+
     id: str
     op: Literal["counter"] = "counter"
     trig: Ref
@@ -334,11 +402,15 @@ class Counter(BaseModel):
 
 
 class Elapsed(BaseModel):
+    """model."""
+
     id: str
     op: Literal["elapsed"] = "elapsed"
 
 
 class MulAccum(BaseModel):
+    """model."""
+
     id: str
     op: Literal["mulaccum"] = "mulaccum"
     incr: Ref
@@ -346,6 +418,8 @@ class MulAccum(BaseModel):
 
 
 class RateDiv(BaseModel):
+    """model."""
+
     id: str
     op: Literal["rate_div"] = "rate_div"
     a: Ref
@@ -353,6 +427,8 @@ class RateDiv(BaseModel):
 
 
 class SmoothParam(BaseModel):
+    """model."""
+
     id: str
     op: Literal["smooth"] = "smooth"
     a: Ref
@@ -360,6 +436,8 @@ class SmoothParam(BaseModel):
 
 
 class Slide(BaseModel):
+    """model."""
+
     id: str
     op: Literal["slide"] = "slide"
     a: Ref  # input signal
@@ -368,6 +446,8 @@ class Slide(BaseModel):
 
 
 class ADSR(BaseModel):
+    """model."""
+
     id: str
     op: Literal["adsr"] = "adsr"
     gate: Ref  # >0 = attack/sustain, <=0 = release
@@ -378,6 +458,8 @@ class ADSR(BaseModel):
 
 
 class Peek(BaseModel):
+    """model."""
+
     id: str
     op: Literal["peek"] = "peek"
     a: Ref
@@ -389,6 +471,8 @@ class Peek(BaseModel):
 
 
 class Scale(BaseModel):
+    """model."""
+
     id: str
     op: Literal["scale"] = "scale"
     a: Ref
@@ -404,12 +488,16 @@ class Scale(BaseModel):
 
 
 class Pass(BaseModel):
+    """model."""
+
     id: str
     op: Literal["pass"] = "pass"
     a: Ref
 
 
 class NamedConstant(BaseModel):
+    """model."""
+
     id: str
     op: Literal[
         "pi",
@@ -430,11 +518,15 @@ class NamedConstant(BaseModel):
 
 
 class SampleRate(BaseModel):
+    """model."""
+
     id: str
     op: Literal["samplerate"] = "samplerate"
 
 
 class Smoothstep(BaseModel):
+    """model."""
+
     id: str
     op: Literal["smoothstep"] = "smoothstep"
     a: Ref
@@ -448,11 +540,13 @@ class Smoothstep(BaseModel):
 
 
 class Subgraph(BaseModel):
+    """model."""
+
     id: str
     op: Literal["subgraph"] = "subgraph"
     graph: Graph
     inputs: dict[str, Ref]
-    params: dict[str, Ref] = {}
+    params: dict[str, Ref] = Field(default_factory=dict)
     output: str = ""
 
 
@@ -462,6 +556,8 @@ class Subgraph(BaseModel):
 
 
 class Buffer(BaseModel):
+    """model."""
+
     id: str
     op: Literal["buffer"] = "buffer"
     size: int = 48000
@@ -469,6 +565,8 @@ class Buffer(BaseModel):
 
 
 class BufRead(BaseModel):
+    """model."""
+
     id: str
     op: Literal["buf_read"] = "buf_read"
     buffer: str  # Buffer node ID
@@ -477,6 +575,8 @@ class BufRead(BaseModel):
 
 
 class BufWrite(BaseModel):
+    """model."""
+
     id: str
     op: Literal["buf_write"] = "buf_write"
     buffer: str  # Buffer node ID
@@ -485,6 +585,8 @@ class BufWrite(BaseModel):
 
 
 class Splat(BaseModel):
+    """model."""
+
     id: str
     op: Literal["splat"] = "splat"
     buffer: str  # Buffer node ID
@@ -493,12 +595,16 @@ class Splat(BaseModel):
 
 
 class BufSize(BaseModel):
+    """model."""
+
     id: str
     op: Literal["buf_size"] = "buf_size"
     buffer: str  # Buffer node ID
 
 
 class Cycle(BaseModel):
+    """model."""
+
     id: str
     op: Literal["cycle"] = "cycle"
     buffer: str  # Buffer node ID
@@ -506,6 +612,8 @@ class Cycle(BaseModel):
 
 
 class Wave(BaseModel):
+    """model."""
+
     id: str
     op: Literal["wave"] = "wave"
     buffer: str  # Buffer node ID
@@ -513,6 +621,8 @@ class Wave(BaseModel):
 
 
 class Lookup(BaseModel):
+    """model."""
+
     id: str
     op: Literal["lookup"] = "lookup"
     buffer: str  # Buffer node ID
@@ -525,6 +635,8 @@ class Lookup(BaseModel):
 
 
 class GateRoute(BaseModel):
+    """model."""
+
     id: str
     op: Literal["gate_route"] = "gate_route"
     a: Ref  # input signal
@@ -533,6 +645,8 @@ class GateRoute(BaseModel):
 
 
 class GateOut(BaseModel):
+    """model."""
+
     id: str
     op: Literal["gate_out"] = "gate_out"
     gate: str  # GateRoute node ID
@@ -540,6 +654,8 @@ class GateOut(BaseModel):
 
 
 class Selector(BaseModel):
+    """model."""
+
     id: str
     op: Literal["selector"] = "selector"
     index: Ref  # 1-based input selector (0 = zero output)
@@ -548,62 +664,60 @@ class Selector(BaseModel):
 
 # Discriminated union of all node types
 Node = Annotated[
-    Union[
-        BinOp,
-        UnaryOp,
-        Clamp,
-        Constant,
-        History,
-        DelayLine,
-        DelayRead,
-        DelayWrite,
-        Phasor,
-        Noise,
-        Compare,
-        Select,
-        Wrap,
-        Fold,
-        Mix,
-        Delta,
-        Change,
-        Biquad,
-        SVF,
-        OnePole,
-        DCBlock,
-        Allpass,
-        SinOsc,
-        TriOsc,
-        SawOsc,
-        PulseOsc,
-        SampleHold,
-        Latch,
-        Accum,
-        Counter,
-        Elapsed,
-        MulAccum,
-        RateDiv,
-        SmoothParam,
-        Slide,
-        ADSR,
-        Peek,
-        Scale,
-        Pass,
-        NamedConstant,
-        SampleRate,
-        Smoothstep,
-        Subgraph,
-        Buffer,
-        BufRead,
-        BufWrite,
-        Splat,
-        BufSize,
-        Cycle,
-        Wave,
-        Lookup,
-        GateRoute,
-        GateOut,
-        Selector,
-    ],
+    BinOp
+    | UnaryOp
+    | Clamp
+    | Constant
+    | History
+    | DelayLine
+    | DelayRead
+    | DelayWrite
+    | Phasor
+    | Noise
+    | Compare
+    | Select
+    | Wrap
+    | Fold
+    | Mix
+    | Delta
+    | Change
+    | Biquad
+    | SVF
+    | OnePole
+    | DCBlock
+    | Allpass
+    | SinOsc
+    | TriOsc
+    | SawOsc
+    | PulseOsc
+    | SampleHold
+    | Latch
+    | Accum
+    | Counter
+    | Elapsed
+    | MulAccum
+    | RateDiv
+    | SmoothParam
+    | Slide
+    | ADSR
+    | Peek
+    | Scale
+    | Pass
+    | NamedConstant
+    | SampleRate
+    | Smoothstep
+    | Subgraph
+    | Buffer
+    | BufRead
+    | BufWrite
+    | Splat
+    | BufSize
+    | Cycle
+    | Wave
+    | Lookup
+    | GateRoute
+    | GateOut
+    | Selector,
     Field(discriminator="op"),
 ]
 
@@ -614,6 +728,8 @@ Node = Annotated[
 
 
 class Graph(BaseModel):
+    """model."""
+
     name: str
     sample_rate: float = 44100.0
     control_interval: int = 0  # 0 = disabled; >0 = samples per control block

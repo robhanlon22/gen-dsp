@@ -7,12 +7,27 @@ from pathlib import Path
 import pytest
 
 from gen_dsp.core.parser import GenExportParser
-from gen_dsp.core.project import ProjectGenerator, ProjectConfig
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.platforms import (
     PLATFORM_REGISTRY,
     StandalonePlatform,
     get_platform,
 )
+
+NUM_0 = 0
+
+
+def _resolve_executable(name: str) -> str:
+    """Return the absolute path for an executable."""
+    path = shutil.which(name)
+    if path is None:
+        message = f"{name} not found"
+        raise RuntimeError(message)
+    return path
+
+
+_SUBPROCESS_RUN = subprocess.run
+
 
 # Skip integration tests if compiler not available
 _has_cxx = shutil.which("c++") is not None or shutil.which("g++") is not None
@@ -27,25 +42,25 @@ _skip_no_build = pytest.mark.skipif(
 class TestStandalonePlatform:
     """Test standalone platform registry and basic properties."""
 
-    def test_registry_contains_standalone(self):
-        """Test that standalone is in the registry."""
+    def test_registry_contains_standalone(self) -> object:
+        """Test test registry contains standalone."""
         assert "standalone" in PLATFORM_REGISTRY
         assert PLATFORM_REGISTRY["standalone"] == StandalonePlatform
 
-    def test_get_platform_standalone(self):
-        """Test getting standalone platform instance."""
+    def test_get_platform_standalone(self) -> object:
+        """Test test get platform standalone."""
         platform = get_platform("standalone")
         assert isinstance(platform, StandalonePlatform)
         assert platform.name == "standalone"
 
-    def test_standalone_extension(self):
-        """Test that extension is empty on Unix."""
+    def test_standalone_extension(self) -> object:
+        """Test test standalone extension."""
         platform = StandalonePlatform()
         # On macOS/Linux the extension is empty
-        assert platform.extension == "" or platform.extension == ".exe"
+        assert platform.extension in {"", ".exe"}
 
-    def test_standalone_build_instructions(self):
-        """Test standalone build instructions."""
+    def test_standalone_build_instructions(self) -> object:
+        """Test test standalone build instructions."""
         platform = StandalonePlatform()
         instructions = platform.get_build_instructions()
         assert isinstance(instructions, list)
@@ -55,7 +70,9 @@ class TestStandalonePlatform:
 class TestStandaloneProjectGeneration:
     """Test standalone project generation."""
 
-    def test_generate_project_gigaverb(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_project_gigaverb(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test generating standalone project from gigaverb (no buffers)."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -82,7 +99,7 @@ class TestStandaloneProjectGeneration:
 
     def test_generate_project_with_buffers(
         self, rampleplayer_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating standalone project with buffers."""
         parser = GenExportParser(rampleplayer_export)
         export_info = parser.parse()
@@ -99,8 +116,8 @@ class TestStandaloneProjectGeneration:
         assert "WRAPPER_BUFFER_COUNT 1" in buffer_h
         assert "WRAPPER_BUFFER_NAME_0 sample" in buffer_h
 
-    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that Makefile has correct content."""
+    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path) -> object:
+        """Test test makefile content."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -118,7 +135,7 @@ class TestStandaloneProjectGeneration:
 
     def test_gen_ext_standalone_cpp_content(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test that gen_ext_standalone.cpp has correct content."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -136,7 +153,9 @@ class TestStandaloneProjectGeneration:
         assert "ma_device" in content
         assert "STANDALONE_EXT_NAME" in content
 
-    def test_generate_copies_gen_export(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_copies_gen_export(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test that gen~ export is copied to project."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -154,7 +173,7 @@ class TestStandaloneProjectGeneration:
 
     def test_ext_header_uses_shared_template(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test that _ext_standalone.h is generated from shared template."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -171,13 +190,14 @@ class TestStandaloneProjectGeneration:
 
 
 class TestStandaloneBuildIntegration:
-    """Integration tests that generate and compile standalone executables.
+    """
+    Integration tests that generate and compile standalone executables.
 
     Skipped when c++, make, or curl is not available.
     """
 
     @_skip_no_build
-    def test_build_gigaverb(self, gigaverb_export: Path, tmp_path: Path):
+    def test_build_gigaverb(self, gigaverb_export: Path, tmp_path: Path) -> object:
         """Generate and compile gigaverb standalone executable."""
         project_dir = tmp_path / "gigaverb_standalone"
         parser = GenExportParser(gigaverb_export)
@@ -187,24 +207,28 @@ class TestStandaloneBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make all failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         # Verify executable was produced
         exe = project_dir / "gigaverb"
         assert exe.is_file()
-        assert exe.stat().st_size > 0
+        assert exe.stat().st_size > NUM_0
 
     @_skip_no_build
-    def test_build_spectraldelayfb(self, spectraldelayfb_export: Path, tmp_path: Path):
+    def test_build_spectraldelayfb(
+        self, spectraldelayfb_export: Path, tmp_path: Path
+    ) -> object:
         """Generate and compile spectraldelayfb (3in/2out) standalone."""
         project_dir = tmp_path / "spectraldelayfb_standalone"
         parser = GenExportParser(spectraldelayfb_export)
@@ -214,24 +238,26 @@ class TestStandaloneBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make all failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         exe = project_dir / "spectraldelayfb"
         assert exe.is_file()
-        assert exe.stat().st_size > 0
+        assert exe.stat().st_size > NUM_0
 
     @_skip_no_build
-    def test_list_params(self, gigaverb_export: Path, tmp_path: Path):
-        """Build gigaverb and verify -l flag lists parameters."""
+    def test_list_params(self, gigaverb_export: Path, tmp_path: Path) -> object:
+        """Generate and list parameters for gigaverb standalone."""
         project_dir = tmp_path / "gigaverb_params"
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -240,27 +266,30 @@ class TestStandaloneBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        build_result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        build_result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert build_result.returncode == 0, (
+        assert build_result.returncode == NUM_0, (
             f"make all failed:\nstdout: {build_result.stdout}\n"
             f"stderr: {build_result.stderr}"
         )
 
         # Run with -l to list params
-        result = subprocess.run(
+        result = _SUBPROCESS_RUN(
             ["./gigaverb", "-l"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=10,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"-l failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
         output = result.stdout

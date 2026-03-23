@@ -8,12 +8,28 @@ from pathlib import Path
 import pytest
 
 from gen_dsp.core.parser import GenExportParser
-from gen_dsp.core.project import ProjectGenerator, ProjectConfig
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.platforms import (
     PLATFORM_REGISTRY,
     ChuckPlatform,
     get_platform,
 )
+
+NUM_0 = 0
+NUM_1 = 1
+
+
+def _resolve_executable(name: str) -> str:
+    """Return the absolute path for an executable."""
+    path = shutil.which(name)
+    if path is None:
+        message = f"{name} not found"
+        raise RuntimeError(message)
+    return path
+
+
+_SUBPROCESS_RUN = subprocess.run
+
 
 # Skip integration tests if no C++ compiler available
 _has_cxx = shutil.which("g++") is not None or shutil.which("clang++") is not None
@@ -28,32 +44,16 @@ _skip_no_chuck = pytest.mark.skipif(
 )
 
 
-def _validate_chugin(
-    project_dir: Path,
+def _build_chuck_script_lines(
     class_name: str,
     expected_params: int,
-    expect_audio: bool = False,
-    buffers: dict[str, str] | None = None,
-    phasor_input: bool = False,
-) -> None:
-    """Load a built chugin in ChucK and validate it works.
-
-    When expect_audio is True, feeds audio through the chugin and asserts
-    non-zero energy in the output.
-
-    buffers: optional dict mapping buffer name -> wav filename (relative to
-    project_dir). Loaded into gen~ internal buffers via loadBuffer().
-
-    phasor_input: when True, uses a Phasor (0-1 ramp at 10 Hz) as the audio
-    input instead of Noise. Useful for position-controlled sample players.
-    """
-    if not _has_chuck:
-        return
-
-    test_ck = project_dir / "test.ck"
-
+    buffers: dict[str, str] | None,
+    *,
+    expect_audio: bool,
+    phasor_input: bool,
+) -> list[str]:
+    """Build the ChucK test script for a chugin."""
     lines = [f'@import "{class_name}"']
-
     if expect_audio:
         if phasor_input:
             lines += [
@@ -65,7 +65,6 @@ def _validate_chugin(
     else:
         lines.append(f"{class_name} eff => blackhole;")
 
-    # Load internal gen~ buffers if specified
     if buffers:
         for buf_name, wav_file in buffers.items():
             lines += [
@@ -77,12 +76,11 @@ def _validate_chugin(
         "eff.numParams() => int np;",
         '<<< "PARAMS", np >>>;',
     ]
-    if expected_params > 0:
+    if expected_params > NUM_0:
         lines += [
             "eff.paramName(0) => string pname;",
             '<<< "PNAME", pname >>>;',
         ]
-
     if expect_audio:
         lines += [
             "50::ms => now;",
@@ -98,19 +96,17 @@ def _validate_chugin(
         lines.append("100::ms => now;")
 
     lines.append('<<< "DONE" >>>;')
-    test_ck.write_text("\n".join(lines) + "\n")
+    return lines
 
-    result = subprocess.run(
-        ["chuck", "--chugin-path:.", "--silent", "test.ck"],
-        cwd=project_dir,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, (
-        f"chuck failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    )
-    output = result.stderr
+
+def _assert_chuck_output(
+    output: str,
+    expected_params: int,
+    buffers: dict[str, str] | None,
+    *,
+    expect_audio: bool,
+) -> None:
+    """Validate the ChucK runtime output."""
     assert "PARAMS" in output
     assert str(expected_params) in output
     if buffers:
@@ -123,31 +119,78 @@ def _validate_chugin(
     assert "DONE" in output
 
 
+def _validate_chugin(
+    project_dir: Path,
+    class_name: str,
+    expected_params: int,
+    **options: object,
+) -> None:
+    """Load a built chugin in ChucK and validate it works."""
+    if not _has_chuck:
+        return
+    expect_audio = bool(options.get("expect_audio", False))
+    buffers = options.get("buffers")
+    phasor_input = bool(options.get("phasor_input", False))
+
+    test_ck = project_dir / "test.ck"
+    test_ck.write_text(
+        "\n".join(
+            _build_chuck_script_lines(
+                class_name,
+                expected_params,
+                buffers,
+                expect_audio=expect_audio,
+                phasor_input=phasor_input,
+            )
+        )
+        + "\n"
+    )
+
+    chuck = _resolve_executable("chuck")
+    result = _SUBPROCESS_RUN(
+        [chuck, "--chugin-path:.", "--silent", "test.ck"],
+        check=False,
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == NUM_0, (
+        f"chuck failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    _assert_chuck_output(
+        result.stderr,
+        expected_params,
+        buffers,
+        expect_audio=expect_audio,
+    )
+
+
 class TestChuckPlatform:
     """Test ChucK platform registry and basic properties."""
 
-    def test_registry_contains_chuck(self):
-        """Test that ChucK is in the registry."""
+    def test_registry_contains_chuck(self) -> object:
+        """Test test registry contains chuck."""
         assert "chuck" in PLATFORM_REGISTRY
         assert PLATFORM_REGISTRY["chuck"] == ChuckPlatform
 
-    def test_get_platform_chuck(self):
-        """Test getting ChucK platform instance."""
+    def test_get_platform_chuck(self) -> object:
+        """Test test get platform chuck."""
         platform = get_platform("chuck")
         assert isinstance(platform, ChuckPlatform)
         assert platform.name == "chuck"
 
-    def test_chuck_extension(self):
-        """Test that extension is .chug."""
+    def test_chuck_extension(self) -> object:
+        """Test test chuck extension."""
         platform = ChuckPlatform()
         assert platform.extension == ".chug"
 
-    def test_chuck_build_instructions(self):
-        """Test ChucK build instructions."""
+    def test_chuck_build_instructions(self) -> object:
+        """Test test chuck build instructions."""
         platform = ChuckPlatform()
         instructions = platform.get_build_instructions()
         assert isinstance(instructions, list)
-        assert len(instructions) > 0
+        assert len(instructions) > NUM_0
         assert any("make" in instr for instr in instructions)
 
 
@@ -156,7 +199,7 @@ class TestChuckProjectGeneration:
 
     def test_generate_chuck_project_no_buffers(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating ChucK project without buffers."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -187,7 +230,7 @@ class TestChuckProjectGeneration:
 
     def test_generate_chuck_project_with_buffers(
         self, rampleplayer_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating ChucK project with buffers."""
         parser = GenExportParser(rampleplayer_export)
         export_info = parser.parse()
@@ -207,7 +250,7 @@ class TestChuckProjectGeneration:
 
     def test_generate_chuck_project_multiple_buffers(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating ChucK project with multiple buffers."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -226,8 +269,8 @@ class TestChuckProjectGeneration:
         assert "WRAPPER_BUFFER_NAME_1 buf2" in buffer_h
         assert "WRAPPER_BUFFER_NAME_2 buf3" in buffer_h
 
-    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that makefile has correct template substitutions."""
+    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path) -> object:
+        """Test test makefile content."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -241,7 +284,9 @@ class TestChuckProjectGeneration:
         assert "GEN_EXPORTED_NAME=gen_exported" in makefile
         assert "GENLIB_USE_FLOAT32" in makefile
 
-    def test_generate_copies_gen_export(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_copies_gen_export(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test that gen~ export is copied to project."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -259,13 +304,16 @@ class TestChuckProjectGeneration:
 
 
 class TestChuckBuildIntegration:
-    """Integration tests that generate and compile a chugin.
+    """
+    Integration tests that generate and compile a chugin.
 
     Skipped when no C++ compiler or make is available.
     """
 
     @_skip_no_toolchain
-    def test_build_chugin_no_buffers(self, gigaverb_export: Path, tmp_path: Path):
+    def test_build_chugin_no_buffers(
+        self, gigaverb_export: Path, tmp_path: Path
+    ) -> object:
         """Generate and compile a chugin from gigaverb (no buffers)."""
         project_dir = tmp_path / "gigaverb_chuck"
         parser = GenExportParser(gigaverb_export)
@@ -277,28 +325,32 @@ class TestChuckBuildIntegration:
 
         # Determine build target
         target = "mac" if sys_platform.system().lower() == "darwin" else "linux"
+        make = _resolve_executable("make")
 
-        result = subprocess.run(
-            ["make", target],
+        result = _SUBPROCESS_RUN(
+            [make, target],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make {target} failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         # Verify .chug was produced
         chug_files = list(project_dir.glob("*.chug"))
-        assert len(chug_files) == 1
-        assert chug_files[0].name == "Gigaverb.chug"
-        assert chug_files[0].stat().st_size > 0
+        assert len(chug_files) == NUM_1
+        assert chug_files[NUM_0].name == "Gigaverb.chug"
+        assert chug_files[NUM_0].stat().st_size > NUM_0
 
         _validate_chugin(project_dir, "Gigaverb", 8, expect_audio=True)
 
     @_skip_no_toolchain
-    def test_build_chugin_with_buffers(self, rampleplayer_export: Path, tmp_path: Path):
+    def test_build_chugin_with_buffers(
+        self, rampleplayer_export: Path, tmp_path: Path
+    ) -> object:
         """Generate and compile a chugin from RamplePlayer (has buffers)."""
         project_dir = tmp_path / "rampleplayer_chuck"
         parser = GenExportParser(rampleplayer_export)
@@ -313,21 +365,23 @@ class TestChuckBuildIntegration:
         generator.generate(project_dir)
 
         target = "mac" if sys_platform.system().lower() == "darwin" else "linux"
+        make = _resolve_executable("make")
 
-        result = subprocess.run(
-            ["make", target],
+        result = _SUBPROCESS_RUN(
+            [make, target],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make {target} failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         chug_files = list(project_dir.glob("*.chug"))
-        assert len(chug_files) == 1
-        assert chug_files[0].name == "Rampleplayer.chug"
+        assert len(chug_files) == NUM_1
+        assert chug_files[NUM_0].name == "Rampleplayer.chug"
 
         # Copy test audio for buffer loading
         wav_src = Path(__file__).parent / "data" / "amen.wav"
@@ -345,7 +399,7 @@ class TestChuckBuildIntegration:
     @_skip_no_toolchain
     def test_build_chugin_spectraldelayfb(
         self, spectraldelayfb_export: Path, tmp_path: Path
-    ):
+    ) -> object:
         """Generate and compile a chugin from spectraldelayfb (3in/2out, no buffers)."""
         project_dir = tmp_path / "spectraldelayfb_chuck"
         parser = GenExportParser(spectraldelayfb_export)
@@ -356,28 +410,32 @@ class TestChuckBuildIntegration:
         generator.generate(project_dir)
 
         target = "mac" if sys_platform.system().lower() == "darwin" else "linux"
+        make = _resolve_executable("make")
 
-        result = subprocess.run(
-            ["make", target],
+        result = _SUBPROCESS_RUN(
+            [make, target],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make {target} failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         chug_files = list(project_dir.glob("*.chug"))
-        assert len(chug_files) == 1
-        assert chug_files[0].name == "Spectraldelayfb.chug"
-        assert chug_files[0].stat().st_size > 0
+        assert len(chug_files) == NUM_1
+        assert chug_files[NUM_0].name == "Spectraldelayfb.chug"
+        assert chug_files[NUM_0].stat().st_size > NUM_0
 
         _validate_chugin(project_dir, "Spectraldelayfb", 0, expect_audio=True)
 
     @_skip_no_toolchain
     @_skip_no_chuck
-    def test_load_chugin_in_chuck(self, gigaverb_export: Path, tmp_path: Path):
+    def test_load_chugin_in_chuck(
+        self, gigaverb_export: Path, tmp_path: Path
+    ) -> object:
         """Build a chugin and verify ChucK can load and run it."""
         project_dir = tmp_path / "gigaverb_load"
         parser = GenExportParser(gigaverb_export)
@@ -388,14 +446,18 @@ class TestChuckBuildIntegration:
         generator.generate(project_dir)
 
         target = "mac" if sys_platform.system().lower() == "darwin" else "linux"
-        build = subprocess.run(
-            ["make", target],
+        make = _resolve_executable("make")
+        build = _SUBPROCESS_RUN(
+            [make, target],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert build.returncode == 0, f"make {target} failed:\nstderr: {build.stderr}"
+        assert build.returncode == NUM_0, (
+            f"make {target} failed:\nstderr: {build.stderr}"
+        )
 
         # Write a ChucK script that exercises the chugin
         test_ck = project_dir / "test.ck"
@@ -411,14 +473,16 @@ class TestChuckBuildIntegration:
             '<<< "DONE" >>>;\n'
         )
 
-        result = subprocess.run(
-            ["chuck", "--chugin-path:.", "--silent", "test.ck"],
+        chuck = _resolve_executable("chuck")
+        result = _SUBPROCESS_RUN(
+            [chuck, "--chugin-path:.", "--silent", "test.ck"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=30,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"chuck failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 

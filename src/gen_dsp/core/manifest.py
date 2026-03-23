@@ -14,7 +14,6 @@ Typical data flow:
 import json
 import re
 from dataclasses import dataclass, field
-
 from typing import Any
 
 from gen_dsp.core.parser import ExportInfo
@@ -32,6 +31,7 @@ class ParamInfo:
     default: float
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the parameter metadata to a dictionary."""
         return {
             "index": self.index,
             "name": self.name,
@@ -43,6 +43,7 @@ class ParamInfo:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ParamInfo":
+        """Create a parameter metadata object from a dictionary."""
         return cls(
             index=d["index"],
             name=d["name"],
@@ -55,7 +56,8 @@ class ParamInfo:
 
 @dataclass
 class RemappedInput:
-    """A signal input remapped to a parameter.
+    """
+    A signal input remapped to a parameter.
 
     When gen~ exports use signal-rate ``in`` objects for control data
     (e.g., pitch, gate), ``--inputs-as-params`` converts them to plugin
@@ -68,6 +70,7 @@ class RemappedInput:
     param_index: int  # index in the expanded param list
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the remapped input metadata to a dictionary."""
         return {
             "gen_input_index": self.gen_input_index,
             "input_name": self.input_name,
@@ -76,6 +79,7 @@ class RemappedInput:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "RemappedInput":
+        """Create a remapped input object from a dictionary."""
         return cls(
             gen_input_index=d["gen_input_index"],
             input_name=d["input_name"],
@@ -98,9 +102,11 @@ class Manifest:
 
     @property
     def num_params(self) -> int:
+        """Return the number of parameters."""
         return len(self.params)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the manifest to a dictionary."""
         d: dict[str, Any] = {
             "gen_name": self.gen_name,
             "num_inputs": self.num_inputs,
@@ -116,6 +122,7 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Manifest":
+        """Build a manifest from a JSON-compatible dictionary."""
         return cls(
             gen_name=d["gen_name"],
             num_inputs=d["num_inputs"],
@@ -130,10 +137,12 @@ class Manifest:
         )
 
     def to_json(self, indent: int = 2) -> str:
+        """Serialize the manifest to JSON text."""
         return json.dumps(self.to_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, text: str) -> "Manifest":
+        """Build a manifest from JSON text."""
         return cls.from_dict(json.loads(text))
 
 
@@ -171,7 +180,8 @@ _MEMBER_INIT_RE = re.compile(r"(m_\w+)\s*=\s*\(\((?:int|t_sample)\)([\d.eE+\-]+)
 
 
 def _parse_member_init_values(content: str) -> dict[str, float]:
-    """Parse initial member values from the reset() function.
+    """
+    Parse initial member values from the reset() function.
 
     Extracts assignments like: m_bandwidth_21 = ((t_sample)0.5);
     Returns a dict mapping member name to numeric value.
@@ -183,7 +193,8 @@ def _parse_member_init_values(content: str) -> dict[str, float]:
 
 
 def _parse_default_var_for_param(content: str, param_block_start: int) -> str | None:
-    """Find the pi->defaultvalue member variable name near a param block.
+    """
+    Find the pi->defaultvalue member variable name near a param block.
 
     Searches forward from param_block_start for the defaultvalue assignment
     within the same parameter block (before the next 'pi = ' assignment).
@@ -200,7 +211,8 @@ def _parse_default_var_for_param(content: str, param_block_start: int) -> str | 
 
 
 def parse_params_from_export(export_info: ExportInfo) -> list[ParamInfo]:
-    """Parse parameter metadata from a gen~ export's .cpp file.
+    """
+    Parse parameter metadata from a gen~ export's .cpp file.
 
     Returns an empty list if parsing fails or no params exist.
     """
@@ -263,7 +275,8 @@ def manifest_from_export_info(
 
 
 def _sanitize_input_name(name: str) -> str:
-    """Convert an input name to a valid C identifier for use as a param name.
+    """
+    Convert an input name to a valid C identifier for use as a param name.
 
     E.g. "c/m ratio" -> "c_m_ratio"
     """
@@ -280,7 +293,8 @@ def apply_inputs_as_params(
     input_names: list[str],
     remap_names: list[str] | None = None,
 ) -> Manifest:
-    """Remap signal inputs to parameters.
+    """
+    Remap signal inputs to parameters.
 
     When ``remap_names`` is None (bare ``--inputs-as-params``), all signal
     inputs are remapped. When a list is given, only those named inputs are
@@ -300,11 +314,15 @@ def apply_inputs_as_params(
 
     Raises:
         ValueError: If a requested name is not in ``input_names``.
+
     """
     if not input_names:
-        raise ValueError(
+        msg = (
             "No input names found in gen~ export (gen_kernel_innames). "
             "Cannot remap inputs to parameters."
+        )
+        raise ValueError(
+            msg
         )
 
     # Determine which inputs to remap
@@ -317,10 +335,11 @@ def apply_inputs_as_params(
             try:
                 idx = input_names.index(rname)
             except ValueError:
-                raise ValueError(
+                msg = (
                     f"Input name '{rname}' not found. "
                     f"Available input names: {input_names}"
                 )
+                raise ValueError(msg) from None
             indices_to_remap.append(idx)
 
     if not indices_to_remap:
@@ -368,7 +387,8 @@ def apply_inputs_as_params(
 
 
 def _build_remap_defs(manifest: Manifest) -> list[str]:
-    """Return raw KEY=VALUE define pairs for input-to-parameter remapping.
+    """
+    Return raw KEY=VALUE define pairs for input-to-parameter remapping.
 
     Returns an empty list if no inputs are remapped.
     """
@@ -393,7 +413,8 @@ def _build_remap_defs(manifest: Manifest) -> list[str]:
 
 
 def build_remap_defines(manifest: Manifest) -> str:
-    """Build CMake compile definition lines for input-to-parameter remapping.
+    """
+    Build CMake compile definition lines for input-to-parameter remapping.
 
     Returns an empty string if no inputs are remapped, or newline+indent
     separated definition strings suitable for CMake target_compile_definitions().
@@ -410,21 +431,19 @@ def build_remap_defines_make(
     manifest: Manifest,
     flag_vars: str | list[str] = "FLAGS",
 ) -> str:
-    """Build Make-style compile flags for input-to-parameter remapping.
+    """
+    Build Make-style compile flags for input-to-parameter remapping.
 
     Returns an empty string if no inputs are remapped, or newline-separated
     ``FLAG_VAR += -DKEY=VALUE`` lines suitable for Makefile templates.
 
-    ``flag_vars`` can be a single variable name or a list (e.g. ``["CFLAGS", "CPPFLAGS"]``)
-    to emit defines for multiple flag variables.
+    ``flag_vars`` can be a single variable name or a list such as
+    ``["CFLAGS", "CPPFLAGS"]`` to emit defines for multiple flag variables.
     """
     defs = _build_remap_defs(manifest)
     if not defs:
         return ""
     if isinstance(flag_vars, str):
         flag_vars = [flag_vars]
-    lines = []
-    for var in flag_vars:
-        for d in defs:
-            lines.append(f"{var} += -D{d}")
+    lines = [f"{var} += -D{d}" for var in flag_vars for d in defs]
     return "\n".join(lines)

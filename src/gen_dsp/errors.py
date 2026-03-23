@@ -1,39 +1,25 @@
-"""
-Custom exceptions for gen_dsp.
-"""
+"""Custom exceptions for gen_dsp."""
 
 
 class GenExtError(Exception):
     """Base exception for gen_dsp errors."""
 
-    pass
-
 
 class ParseError(GenExtError):
     """Error parsing gen~ export files."""
-
-    pass
 
 
 class ValidationError(GenExtError):
     """Error validating configuration or inputs."""
 
-    pass
-
 
 class ProjectError(GenExtError):
     """Error creating or managing project."""
-
-    pass
 
 
 class BuildError(GenExtError):
     """Error during build process."""
 
-    pass
-
 
 class PatchError(GenExtError):
     """Error applying patches."""
-
-    pass

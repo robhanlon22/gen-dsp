@@ -6,32 +6,25 @@ Handles issues like:
 """
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from gen_dsp.errors import PatchError
 
 
+@dataclass
 class PatchResult:
     """Result of applying a patch."""
 
-    def __init__(
-        self,
-        file_path: Path,
-        patch_name: str,
-        applied: bool,
-        message: str,
-        original_content: Optional[str] = None,
-        new_content: Optional[str] = None,
-    ):
-        self.file_path = file_path
-        self.patch_name = patch_name
-        self.applied = applied
-        self.message = message
-        self.original_content = original_content
-        self.new_content = new_content
+    file_path: Path
+    patch_name: str
+    applied: bool
+    message: str
+    original_content: str | None = None
+    new_content: str | None = None
 
     def __repr__(self) -> str:
+        """Return a compact summary of the patch result."""
         status = "applied" if self.applied else "skipped"
         return f"PatchResult({self.patch_name}: {status})"
 
@@ -42,16 +35,17 @@ class Patcher:
     # Pattern to match exp2f calls
     EXP2F_PATTERN = re.compile(r"\bexp2f\s*\(")
 
-    def __init__(self, target_path: Path | str):
+    def __init__(self, target_path: Path | str) -> None:
         """
         Initialize patcher with target directory.
 
         Args:
             target_path: Path to the gen~ export or project directory.
+
         """
         self.target_path = Path(target_path).resolve()
 
-    def apply_all(self, dry_run: bool = False) -> list[PatchResult]:
+    def apply_all(self, *, dry_run: bool = False) -> list[PatchResult]:
         """
         Apply all available patches.
 
@@ -60,6 +54,7 @@ class Patcher:
 
         Returns:
             List of PatchResult objects.
+
         """
         results = []
 
@@ -70,7 +65,7 @@ class Patcher:
 
         return results
 
-    def apply_exp2f_fix(self, dry_run: bool = False) -> Optional[PatchResult]:
+    def apply_exp2f_fix(self, *, dry_run: bool = False) -> PatchResult | None:
         """
         Apply the exp2f -> exp2 fix for macOS compatibility.
 
@@ -82,6 +77,7 @@ class Patcher:
 
         Returns:
             PatchResult or None if file not found.
+
         """
         # Look for genlib_ops.h in various locations
         possible_paths = [
@@ -134,7 +130,8 @@ class Patcher:
                 new_content=new_content,
             )
         except OSError as e:
-            raise PatchError(f"Failed to write patched file: {e}") from e
+            message = f"Failed to write patched file: {e}"
+            raise PatchError(message) from e
 
     def check_patches_needed(self) -> dict[str, bool]:
         """
@@ -142,6 +139,7 @@ class Patcher:
 
         Returns:
             Dict mapping patch name to whether it's needed.
+
         """
         needed = {}
 

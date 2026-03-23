@@ -1,19 +1,23 @@
 """Tests for gen_dsp.core.project module."""
 
+
 from pathlib import Path
 
 import pytest
 
 from gen_dsp.core.parser import GenExportParser
-from gen_dsp.core.project import ProjectGenerator, ProjectConfig
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.errors import ValidationError
+
+NUM_0 = 0
+NUM_1 = 1
 
 
 class TestProjectConfig:
     """Tests for ProjectConfig class."""
 
-    def test_valid_config(self):
-        """Test validation of valid configuration."""
+    def test_valid_config(self) -> object:
+        """A valid config should produce no validation errors."""
         config = ProjectConfig(
             name="myeffect",
             platform="pd",
@@ -22,49 +26,49 @@ class TestProjectConfig:
         errors = config.validate()
         assert errors == []
 
-    def test_invalid_name_starts_with_number(self):
-        """Test validation rejects name starting with number."""
+    def test_invalid_name_starts_with_number(self) -> object:
+        """Names starting with a digit should be rejected."""
         config = ProjectConfig(name="123invalid", platform="pd")
         errors = config.validate()
-        assert len(errors) == 1
-        assert "not a valid C identifier" in errors[0]
+        assert len(errors) == NUM_1
+        assert "not a valid C identifier" in errors[NUM_0]
 
-    def test_invalid_name_with_spaces(self):
-        """Test validation rejects name with spaces."""
+    def test_invalid_name_with_spaces(self) -> object:
+        """Names with spaces should be rejected."""
         config = ProjectConfig(name="has space", platform="pd")
         errors = config.validate()
-        assert len(errors) == 1
-        assert "not a valid C identifier" in errors[0]
+        assert len(errors) == NUM_1
+        assert "not a valid C identifier" in errors[NUM_0]
 
-    def test_invalid_platform(self):
-        """Test validation rejects invalid platform."""
+    def test_invalid_platform(self) -> object:
+        """Unknown platforms should be rejected."""
         config = ProjectConfig(name="valid", platform="invalid")
         errors = config.validate()
-        assert len(errors) == 1
-        assert "Platform must be one of" in errors[0]
-        assert "'invalid'" in errors[0]
+        assert len(errors) == NUM_1
+        assert "Platform must be one of" in errors[NUM_0]
+        assert "'invalid'" in errors[NUM_0]
 
-    def test_too_many_buffers(self):
-        """Test validation rejects more than 5 buffers."""
+    def test_too_many_buffers(self) -> object:
+        """More than five buffers should be rejected."""
         config = ProjectConfig(
             name="valid",
             platform="pd",
             buffers=["b1", "b2", "b3", "b4", "b5", "b6"],
         )
         errors = config.validate()
-        assert len(errors) == 1
-        assert "Maximum 5 buffers" in errors[0]
+        assert len(errors) == NUM_1
+        assert "Maximum 5 buffers" in errors[NUM_0]
 
-    def test_invalid_buffer_name(self):
-        """Test validation rejects invalid buffer names."""
+    def test_invalid_buffer_name(self) -> object:
+        """Invalid buffer names should be rejected."""
         config = ProjectConfig(
             name="valid",
             platform="pd",
             buffers=["valid", "123invalid"],
         )
         errors = config.validate()
-        assert len(errors) == 1
-        assert "not a valid C identifier" in errors[0]
+        assert len(errors) == NUM_1
+        assert "not a valid C identifier" in errors[NUM_0]
 
 
 class TestProjectGenerator:
@@ -72,7 +76,7 @@ class TestProjectGenerator:
 
     def test_generate_pd_project_no_buffers(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating PureData project without buffers."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -106,7 +110,7 @@ class TestProjectGenerator:
 
     def test_generate_pd_project_with_buffers(
         self, rampleplayer_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating PureData project with buffers."""
         parser = GenExportParser(rampleplayer_export)
         export_info = parser.parse()
@@ -126,7 +130,7 @@ class TestProjectGenerator:
 
     def test_generate_with_multiple_buffers(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating project with multiple buffers."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -147,7 +151,7 @@ class TestProjectGenerator:
 
     def test_generate_invalid_config_raises_error(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test that invalid config raises ValidationError."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -158,7 +162,9 @@ class TestProjectGenerator:
         with pytest.raises(ValidationError):
             generator.generate(tmp_project)
 
-    def test_generate_copies_gen_export(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_copies_gen_export(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test that gen~ export is copied to project."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()

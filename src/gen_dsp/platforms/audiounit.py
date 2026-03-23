@@ -8,9 +8,10 @@ required -- only system frameworks (AudioToolbox, CoreFoundation, CoreAudio).
 
 import platform as sys_platform
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import Optional
+from typing import ClassVar
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines
@@ -22,6 +23,18 @@ from gen_dsp.platforms.cmake_platform import CMakePlatform
 from gen_dsp.templates import get_au_templates_dir
 
 
+@dataclass(frozen=True)
+class AudioUnitCMakeContext:
+    """Inputs for rendering the AudioUnit CMake template."""
+
+    gen_name: str
+    lib_name: str
+    num_inputs: int
+    num_outputs: int
+    midi_defines: str
+    remap_defines: str
+
+
 class AudioUnitPlatform(CMakePlatform):
     """AudioUnit v2 platform implementation using CMake."""
 
@@ -29,15 +42,17 @@ class AudioUnitPlatform(CMakePlatform):
 
     # Default manufacturer code for gen-dsp generated AUs
     # Apple requires at least one non-lowercase character in manufacturer OSType
-    AU_MANUFACTURER = "Gdsp"
+    AU_MANUFACTURER: ClassVar[str] = "Gdsp"
 
-    _AU_TYPE_MAP = {
+    _AU_TYPE_MAP: ClassVar[dict[PluginCategory, str]] = {
         PluginCategory.EFFECT: "aufx",
         PluginCategory.GENERATOR: "augn",
     }
 
     # Music Device type for MIDI-enabled generators
-    AU_TYPE_MUSIC_DEVICE = "aumu"
+    AU_TYPE_MUSIC_DEVICE: ClassVar[str] = "aumu"
+
+    _VERSION_PATCH_INDEX: ClassVar[int] = 2
 
     @property
     def extension(self) -> str:
@@ -49,12 +64,13 @@ class AudioUnitPlatform(CMakePlatform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate AudioUnit project files."""
         templates_dir = get_au_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"AudioUnit templates not found at {templates_dir}")
+            msg = f"AudioUnit templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -88,15 +104,18 @@ class AudioUnitPlatform(CMakePlatform):
             au_type = self.AU_TYPE_MUSIC_DEVICE
 
         # Generate CMakeLists.txt
+        cmake_context = AudioUnitCMakeContext(
+            gen_name=manifest.gen_name,
+            lib_name=lib_name,
+            num_inputs=manifest.num_inputs,
+            num_outputs=manifest.num_outputs,
+            midi_defines=midi_defines,
+            remap_defines=remap_defines,
+        )
         self._generate_cmakelists(
             templates_dir / "CMakeLists.txt.template",
             output_dir / "CMakeLists.txt",
-            manifest.gen_name,
-            lib_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            midi_defines=midi_defines,
-            remap_defines=remap_defines,
+            cmake_context,
         )
 
         # Generate Info.plist
@@ -120,7 +139,8 @@ class AudioUnitPlatform(CMakePlatform):
         (output_dir / "build").mkdir(exist_ok=True)
 
     def _generate_subtype(self, lib_name: str) -> str:
-        """Generate a 4-char AU subtype code from the library name.
+        """
+        Generate a 4-char AU subtype code from the library name.
 
         Takes first 4 characters lowercased, padded with 'x' if shorter.
         """
@@ -131,37 +151,37 @@ class AudioUnitPlatform(CMakePlatform):
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        midi_defines: str = "",
-        remap_defines: str = "",
+        context: AudioUnitCMakeContext,
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
-            raise ProjectError(f"CMakeLists.txt template not found at {template_path}")
+            msg = f"CMakeLists.txt template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
         content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
+            gen_name=context.gen_name,
+            lib_name=context.lib_name,
             genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            midi_defines=midi_defines,
-            remap_defines=remap_defines,
+            num_inputs=context.num_inputs,
+            num_outputs=context.num_outputs,
+            midi_defines=context.midi_defines,
+            remap_defines=context.remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 
     @staticmethod
     def _version_to_int(version_str: str) -> int:
-        """Convert 'major.minor.patch' to AU packed integer (major<<16 | minor<<8 | patch)."""
+        """Convert 'major.minor.patch' to AU packed integer."""
         parts = version_str.split(".")
         major = int(parts[0]) if len(parts) > 0 else 0
         minor = int(parts[1]) if len(parts) > 1 else 0
-        patch = int(parts[2]) if len(parts) > 2 else 0
+        patch = (
+            int(parts[AudioUnitPlatform._VERSION_PATCH_INDEX])
+            if len(parts) > AudioUnitPlatform._VERSION_PATCH_INDEX
+            else 0
+        )
         return (major << 16) | (minor << 8) | patch
 
     def _generate_info_plist(
@@ -174,7 +194,8 @@ class AudioUnitPlatform(CMakePlatform):
     ) -> None:
         """Generate Info.plist from template."""
         if not template_path.exists():
-            raise ProjectError(f"Info.plist template not found at {template_path}")
+            msg = f"Info.plist template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -191,15 +212,17 @@ class AudioUnitPlatform(CMakePlatform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build AudioUnit using CMake."""
         if sys_platform.system() != "Darwin":
-            raise BuildError("AudioUnit plugins can only be built on macOS")
+            msg = "AudioUnit plugins can only be built on macOS"
+            raise BuildError(msg)
         return self._build_with_cmake(project_dir, clean, verbose)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built AudioUnit .component bundle."""
         build_dir = project_dir / "build"
         if build_dir.is_dir():

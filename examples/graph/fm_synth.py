@@ -1,4 +1,5 @@
-"""FM synthesizer: carrier + modulator with ADSR envelope.
+"""
+FM synthesizer: carrier + modulator with ADSR envelope.
 
 Two sine wavetable oscillators (Cycle) implement classic two-operator FM.
 The modulator's output scales a frequency deviation added to the carrier
@@ -12,8 +13,11 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
+from gen_dsp.core.builder import Builder
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.graph import (
     ADSR,
     AudioOutput,
@@ -24,10 +28,11 @@ from gen_dsp.graph import (
     Param,
     Phasor,
 )
-from gen_dsp.core.project import ProjectConfig, ProjectGenerator
+from gen_dsp.graph.visualize import graph_to_dot_file
 
 
 def make_graph() -> Graph:
+    """Build the example graph."""
     return Graph(
         name="fm_synth",
         inputs=[],  # generator -- no audio inputs
@@ -44,32 +49,31 @@ def make_graph() -> Graph:
         nodes=[
             # Sine wavetable (512 samples, auto-filled with one sine cycle)
             Buffer(id="sine_tbl", size=512, fill="sine"),
-
-            # -- Modulator oscillator --
-            # mod_freq = freq * mod_ratio
+            # Modulator oscillator.
+            # Modulator frequency is derived from carrier frequency and ratio.
             BinOp(id="mod_freq", op="mul", a="freq", b="mod_ratio"),
-
-            # Modulator phasor and wavetable read
+            # Modulator phasor and wavetable read.
             Phasor(id="mod_phasor", freq="mod_freq"),
             Cycle(id="mod_osc", buffer="sine_tbl", phase="mod_phasor"),
-
-            # -- Frequency deviation --
-            # deviation = mod_osc * mod_index * mod_freq
+            # Frequency deviation.
+            # Deviation is modulator output scaled by index and frequency.
             BinOp(id="dev_scale", op="mul", a="mod_osc", b="mod_index"),
             BinOp(id="deviation", op="mul", a="dev_scale", b="mod_freq"),
-
-            # -- Carrier oscillator --
-            # carrier_actual_freq = freq + deviation
+            # Carrier oscillator.
+            # Carrier frequency includes deviation from the modulator.
             BinOp(id="car_freq", op="add", a="freq", b="deviation"),
             Phasor(id="car_phasor", freq="car_freq"),
-
-            # Read carrier from sine table
+            # Read carrier from sine table.
             Cycle(id="car_osc", buffer="sine_tbl", phase="car_phasor"),
-
-            # -- ADSR envelope --
-            ADSR(id="env", gate="gate", attack=10.0, decay=100.0,
-                 sustain=0.7, release=200.0),
-
+            # ADSR envelope.
+            ADSR(
+                id="env",
+                gate="gate",
+                attack=10.0,
+                decay=100.0,
+                sustain=0.7,
+                release=200.0,
+            ),
             # Apply envelope and amplitude
             BinOp(id="env_scaled", op="mul", a="car_osc", b="env"),
             BinOp(id="output", op="mul", a="env_scaled", b="amp"),
@@ -78,22 +82,29 @@ def make_graph() -> Graph:
 
 
 def main() -> None:
+    """Run the example CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-p", "--platform", default=None, help="Target platform")
-    parser.add_argument("-l", "--list", action="store_true", help="List available platforms")
-    parser.add_argument("-b", "--build", action="store_true", help="Build after generating")
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="List available platforms"
+    )
+    parser.add_argument(
+        "-b", "--build", action="store_true", help="Build after generating"
+    )
     parser.add_argument("-o", "--output", type=Path, default=None)
-    parser.add_argument("-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF")
+    parser.add_argument(
+        "-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF"
+    )
     args = parser.parse_args()
 
     if args.list:
-        print("Available platforms:", ", ".join(ProjectConfig.list_platforms()))
+        platforms = ", ".join(ProjectConfig.list_platforms())
+        sys.stdout.write(f"Available platforms: {platforms}\n")
         return
     graph = make_graph()
     if args.dot:
-        from gen_dsp.graph.visualize import graph_to_dot_file
-        dot_path = graph_to_dot_file(graph, args.output or Path("."))
-        print(f"DOT: {dot_path}")
+        dot_path = graph_to_dot_file(graph, args.output or Path())
+        sys.stdout.write(f"DOT: {dot_path}\n")
         return
     if not args.platform:
         parser.error("-p/--platform is required (use -l to list available platforms)")
@@ -103,13 +114,14 @@ def main() -> None:
     gen = ProjectGenerator.from_graph(graph, config)
     project_dir = gen.generate(output_dir=output)
 
-    print(f"Project generated at: {project_dir}")
+    sys.stdout.write(f"Project generated at: {project_dir}\n")
     if args.build:
-        from gen_dsp.core.builder import Builder
         result = Builder(project_dir).build(args.platform, verbose=True)
-        print(f"Build {'succeeded' if result.success else 'failed'}: {result}")
+        status = "succeeded" if result.success else "failed"
+        sys.stdout.write(f"Build {status}: {result}\n")
     else:
-        print(f"Build with: cd {project_dir} && cmake -B build && cmake --build build")
+        build_cmd = f"cd {project_dir} && cmake -B build && cmake --build build"
+        sys.stdout.write(f"Build with: {build_cmd}\n")
 
 
 if __name__ == "__main__":

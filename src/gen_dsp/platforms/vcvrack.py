@@ -20,24 +20,26 @@ Output artifacts:
   - res/<name>.svg (panel SVG)
 """
 
+import http.client
 import json
 import os
 import platform as sys_platform
 import shutil
 import sys
-import urllib.request
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import Optional
+from typing import ClassVar
+from urllib.parse import urlsplit
 
 from gen_dsp.core.builder import BuildResult
+from gen_dsp.core.cache import get_cache_dir
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform, PluginCategory
 from gen_dsp.templates import get_vcvrack_templates_dir
-
 
 # Rack SDK version and download URLs
 RACK_SDK_VERSION = "2.6.1"
@@ -53,6 +55,24 @@ _RACK_SDK_URLS = {
 _RACK_SDK_CACHE_SUBDIR = "rack-sdk-src"
 # Name of the directory inside the extracted zip
 _RACK_SDK_DIR_NAME = "Rack-SDK"
+_HP_SMALL_THRESHOLD = 6
+_HP_MEDIUM_THRESHOLD = 12
+_HP_LARGE_THRESHOLD = 20
+_HTTP_OK = 200
+
+
+@dataclass(frozen=True)
+class VcvRackMakefileContext:
+    """Inputs for rendering the VCV Rack Makefile template."""
+
+    gen_name: str
+    lib_name: str
+    num_inputs: int
+    num_outputs: int
+    num_params: int
+    panel_hp: int
+    default_rack_dir: str
+    remap_defines: str = ""
 
 
 def _get_rack_sdk_url() -> str:
@@ -69,22 +89,24 @@ def _get_rack_sdk_url() -> str:
 
     key = f"{system}_{arch}"
     if key not in _RACK_SDK_URLS:
-        raise BuildError(
+        msg = (
             f"No Rack SDK download available for {system}/{machine}. "
             f"Available: {', '.join(sorted(_RACK_SDK_URLS.keys()))}"
+        )
+        raise BuildError(
+            msg
         )
     return _RACK_SDK_URLS[key]
 
 
 def _get_default_rack_sdk_dir() -> Path:
     """Return the default cached Rack SDK path (OS-appropriate)."""
-    from gen_dsp.core.cache import get_cache_dir
-
     return get_cache_dir() / _RACK_SDK_CACHE_SUBDIR / _RACK_SDK_DIR_NAME
 
 
 def _resolve_rack_dir() -> Path:
-    """Resolve RACK_DIR using the priority chain.
+    """
+    Resolve RACK_DIR using the priority chain.
 
     1. RACK_DIR env var
     2. GEN_DSP_CACHE_DIR env var + rack-sdk-src/Rack-SDK
@@ -101,8 +123,9 @@ def _resolve_rack_dir() -> Path:
     return _get_default_rack_sdk_dir()
 
 
-def ensure_rack_sdk(rack_dir: Optional[Path] = None, verbose: bool = False) -> Path:
-    """Ensure the Rack SDK is available, downloading if necessary.
+def ensure_rack_sdk(rack_dir: Path | None = None, *, verbose: bool = False) -> Path:
+    """
+    Ensure the Rack SDK is available, downloading if necessary.
 
     Args:
         rack_dir: Explicit SDK path. If None, resolves via priority chain.
@@ -113,6 +136,7 @@ def ensure_rack_sdk(rack_dir: Optional[Path] = None, verbose: bool = False) -> P
 
     Raises:
         BuildError: If download fails or SDK is invalid.
+
     """
     if rack_dir is None:
         rack_dir = _resolve_rack_dir()
@@ -129,44 +153,80 @@ def ensure_rack_sdk(rack_dir: Optional[Path] = None, verbose: bool = False) -> P
     zip_path = cache_parent / f"Rack-SDK-{RACK_SDK_VERSION}.zip"
 
     if not zip_path.is_file():
-        if verbose:
-            print(f"Downloading Rack SDK {RACK_SDK_VERSION} from {url} ...")
-        try:
-            urllib.request.urlretrieve(url, zip_path)
-        except Exception as e:
-            zip_path.unlink(missing_ok=True)
-            raise BuildError(f"Failed to download Rack SDK: {e}") from e
+        _download_rack_sdk(url, zip_path, verbose=verbose)
 
     # Extract
-    if verbose:
-        print(f"Extracting Rack SDK to {cache_parent} ...")
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(cache_parent)
-    except Exception as e:
-        raise BuildError(f"Failed to extract Rack SDK: {e}") from e
+    _extract_rack_sdk(zip_path, cache_parent, verbose=verbose)
 
     # Verify
     if not (rack_dir / "plugin.mk").is_file():
-        raise BuildError(
+        msg = (
             f"Rack SDK extraction succeeded but plugin.mk not found at {rack_dir}. "
             f"Contents: {list(cache_parent.iterdir())}"
         )
+        raise BuildError(
+            msg
+        )
 
     return rack_dir
+
+
+def _download_rack_sdk(url: str, zip_path: Path, *, verbose: bool) -> None:
+    """Download the Rack SDK zip file."""
+    parsed = urlsplit(url)
+    connection = http.client.HTTPSConnection(parsed.netloc)
+    error_msg: str | None = None
+    try:
+        if verbose:
+            sys.stdout.write(f"Downloading Rack SDK from {url}\n")
+        path = parsed.path
+        if parsed.query:
+            path = f"{path}?{parsed.query}"
+        connection.request("GET", path)
+        response = connection.getresponse()
+        if response.status != _HTTP_OK:
+            error_msg = f"Failed to download Rack SDK: HTTP {response.status}"
+        else:
+            zip_path.write_bytes(response.read())
+    except Exception as e:
+        zip_path.unlink(missing_ok=True)
+        msg = f"Failed to download Rack SDK: {e}"
+        raise BuildError(msg) from e
+    finally:
+        connection.close()
+
+    if error_msg is not None:
+        zip_path.unlink(missing_ok=True)
+        raise BuildError(error_msg)
+
+
+def _extract_rack_sdk(zip_path: Path, cache_parent: Path, *, verbose: bool) -> None:
+    """Extract the Rack SDK zip into the cache directory."""
+    try:
+        if verbose:
+            sys.stdout.write(f"Extracting Rack SDK to {cache_parent}\n")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(cache_parent)
+    except Exception as e:
+        msg = f"Failed to extract Rack SDK: {e}"
+        raise BuildError(msg) from e
 
 
 class VcvRackPlatform(Platform):
     """VCV Rack module platform implementation using Make."""
 
     name = "vcvrack"
+    _VCR_TAG_MAP: ClassVar[dict[PluginCategory, list[str]]] = {
+        PluginCategory.EFFECT: ["Effect"],
+        PluginCategory.GENERATOR: ["Synth Voice"],
+    }
 
     @property
     def extension(self) -> str:
         """Get the extension for VCV Rack plugins."""
         if sys.platform == "darwin":
             return ".dylib"
-        elif sys.platform == "win32":
+        if sys.platform == "win32":
             return ".dll"
         return ".so"
 
@@ -179,12 +239,14 @@ class VcvRackPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate VCV Rack module project files."""
+        _ = config
         templates_dir = get_vcvrack_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"VCV Rack templates not found at {templates_dir}")
+            msg = f"VCV Rack templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -216,17 +278,20 @@ class VcvRackPlatform(Platform):
         remap_defines = build_remap_defines_make(manifest, "FLAGS")
 
         # Generate Makefile from template
+        makefile_context = VcvRackMakefileContext(
+            gen_name=manifest.gen_name,
+            lib_name=lib_name,
+            num_inputs=manifest.num_inputs,
+            num_outputs=manifest.num_outputs,
+            num_params=manifest.num_params,
+            panel_hp=panel_hp,
+            default_rack_dir=default_rack_dir,
+            remap_defines=remap_defines,
+        )
         self._generate_makefile(
             templates_dir / "Makefile.template",
             output_dir / "Makefile",
-            manifest.gen_name,
-            lib_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            manifest.num_params,
-            panel_hp,
-            default_rack_dir,
-            remap_defines=remap_defines,
+            makefile_context,
         )
 
         # Generate plugin.json manifest
@@ -253,22 +318,18 @@ class VcvRackPlatform(Platform):
             header_comment="Buffer configuration for gen_dsp VCV Rack wrapper",
         )
 
-    _VCR_TAG_MAP = {
-        PluginCategory.EFFECT: ["Effect"],
-        PluginCategory.GENERATOR: ["Synth Voice"],
-    }
-
     @staticmethod
     def _compute_panel_hp(total_components: int) -> int:
-        """Compute panel width in HP from total component count.
+        """
+        Compute panel width in HP from total component count.
 
         HP (Horizontal Pitch) is the standard Eurorack width unit (1 HP = 5.08mm).
         """
-        if total_components <= 6:
-            return 6
-        elif total_components <= 12:
+        if total_components <= _HP_SMALL_THRESHOLD:
+            return _HP_SMALL_THRESHOLD
+        if total_components <= _HP_MEDIUM_THRESHOLD:
             return 10
-        elif total_components <= 20:
+        if total_components <= _HP_LARGE_THRESHOLD:
             return 16
         return 24
 
@@ -276,31 +337,25 @@ class VcvRackPlatform(Platform):
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        num_params: int,
-        panel_hp: int,
-        default_rack_dir: str,
-        remap_defines: str = "",
+        context: VcvRackMakefileContext,
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
-            raise ProjectError(f"Makefile template not found at {template_path}")
+            msg = f"Makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
         content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
+            gen_name=context.gen_name,
+            lib_name=context.lib_name,
             genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            num_params=num_params,
-            panel_hp=panel_hp,
-            default_rack_dir=default_rack_dir,
-            remap_defines=remap_defines,
+            num_inputs=context.num_inputs,
+            num_outputs=context.num_outputs,
+            num_params=context.num_params,
+            panel_hp=context.panel_hp,
+            default_rack_dir=context.default_rack_dir,
+            remap_defines=context.remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 
@@ -364,16 +419,19 @@ class VcvRackPlatform(Platform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
-        """Build VCV Rack plugin using make.
+        """
+        Build VCV Rack plugin using make.
 
         Automatically downloads the Rack SDK if not already cached.
         """
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         # Ensure Rack SDK is available (downloads if needed)
         rack_dir = _resolve_rack_dir()
@@ -406,7 +464,7 @@ class VcvRackPlatform(Platform):
         if (rack_dir / "plugin.mk").is_file():
             self.run_command(["make", "clean", f"RACK_DIR={rack_dir}"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built VCV Rack plugin file."""
         for ext in [".dylib", ".so", ".dll"]:
             candidate = project_dir / f"plugin{ext}"

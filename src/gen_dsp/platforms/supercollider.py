@@ -13,15 +13,42 @@ Output artifacts:
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.manifest import Manifest, ParamInfo, build_remap_defines
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import ProjectError
 from gen_dsp.platforms.cmake_platform import CMakePlatform
 from gen_dsp.templates import get_sc_templates_dir
+
+
+@dataclass(frozen=True)
+class ScClassContext:
+    """Inputs for rendering the SuperCollider class template."""
+
+    lib_name: str
+    ugen_name: str
+    num_inputs: int
+    num_outputs: int
+    num_params: int
+    params: list[ParamInfo]
+
+
+@dataclass(frozen=True)
+class ScCmakeContext:
+    """Inputs for rendering the SuperCollider CMake template."""
+
+    gen_name: str
+    lib_name: str
+    ugen_name: str
+    num_inputs: int
+    num_outputs: int
+    num_params: int
+    use_shared_cache: str
+    cache_dir: str
+    remap_defines: str
 
 
 class SuperColliderPlatform(CMakePlatform):
@@ -41,12 +68,13 @@ class SuperColliderPlatform(CMakePlatform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate SuperCollider UGen project files."""
         templates_dir = get_sc_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"SC templates not found at {templates_dir}")
+            msg = f"SC templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -67,15 +95,15 @@ class SuperColliderPlatform(CMakePlatform):
         ugen_name = self._capitalize_name(lib_name)
 
         # Generate .sc class file
-        self._generate_sc_class(
-            output_dir,
-            lib_name,
-            ugen_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            manifest.num_params,
-            manifest.params,
+        sc_class_context = ScClassContext(
+            lib_name=lib_name,
+            ugen_name=ugen_name,
+            num_inputs=manifest.num_inputs,
+            num_outputs=manifest.num_outputs,
+            num_params=manifest.num_params,
+            params=manifest.params,
         )
+        self._generate_sc_class(output_dir, sc_class_context)
 
         # Resolve shared cache settings
         use_shared_cache, cache_dir = self.resolve_shared_cache(config)
@@ -84,18 +112,21 @@ class SuperColliderPlatform(CMakePlatform):
         remap_defines = build_remap_defines(manifest)
 
         # Generate CMakeLists.txt
-        self._generate_cmakelists(
-            templates_dir / "CMakeLists.txt.template",
-            output_dir / "CMakeLists.txt",
-            manifest.gen_name,
-            lib_name,
-            ugen_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            manifest.num_params,
+        cmake_context = ScCmakeContext(
+            gen_name=manifest.gen_name,
+            lib_name=lib_name,
+            ugen_name=ugen_name,
+            num_inputs=manifest.num_inputs,
+            num_outputs=manifest.num_outputs,
+            num_params=manifest.num_params,
             use_shared_cache=use_shared_cache,
             cache_dir=cache_dir,
             remap_defines=remap_defines,
+        )
+        self._generate_cmakelists(
+            templates_dir / "CMakeLists.txt.template",
+            output_dir / "CMakeLists.txt",
+            cmake_context,
         )
 
         # Generate gen_buffer.h using base class method
@@ -111,7 +142,8 @@ class SuperColliderPlatform(CMakePlatform):
 
     @staticmethod
     def _capitalize_name(name: str) -> str:
-        """Capitalize first letter for SC class name.
+        """
+        Capitalize first letter for SC class name.
 
         SuperCollider class names must start with an uppercase letter.
         """
@@ -122,37 +154,33 @@ class SuperColliderPlatform(CMakePlatform):
     def _generate_sc_class(
         self,
         output_dir: Path,
-        lib_name: str,
-        ugen_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        num_params: int,
-        params: list[ParamInfo],
+        context: ScClassContext,
     ) -> None:
-        """Generate SuperCollider class file (.sc).
+        """
+        Generate SuperCollider class file (.sc).
 
         The class file tells sclang about the UGen's interface:
         argument names, default values, number of outputs, and
         input rate validation.
         """
-        base_class = "MultiOutUGen" if num_outputs > 1 else "UGen"
+        base_class = "MultiOutUGen" if context.num_outputs > 1 else "UGen"
 
         lines = [
-            f"// {ugen_name}.sc - SuperCollider class for {lib_name}",
+            f"// {context.ugen_name}.sc - SuperCollider class for {context.lib_name}",
             "// Generated by gen-dsp",
             "",
-            f"{ugen_name} : {base_class} {{",
+            f"{context.ugen_name} : {base_class} {{",
         ]
 
         # Build argument list for *ar method
         args = []
         arg_names = []
-        for i in range(num_inputs):
+        for i in range(context.num_inputs):
             args.append(f"in{i}")
             arg_names.append(f"in{i}")
-        for i in range(num_params):
-            if i < len(params):
-                p = params[i]
+        for i in range(context.num_params):
+            if i < len(context.params):
+                p = context.params[i]
                 pname = self._sanitize_sc_arg(p.name)
                 default = p.default
             else:
@@ -175,18 +203,18 @@ class SuperColliderPlatform(CMakePlatform):
             lines.append("    }")
 
         # init method (only for MultiOutUGen)
-        if num_outputs > 1:
+        if context.num_outputs > 1:
             lines.append("")
             lines.append("    init { |... theInputs|")
             lines.append("        inputs = theInputs;")
-            lines.append(f"        ^this.initOutputs({num_outputs}, rate);")
+            lines.append(f"        ^this.initOutputs({context.num_outputs}, rate);")
             lines.append("    }")
 
         # checkInputs (validate audio-rate inputs)
-        if num_inputs > 0:
+        if context.num_inputs > 0:
             lines.append("")
             lines.append("    checkInputs {")
-            lines.append(f"        {num_inputs}.do {{ |i|")
+            lines.append(f"        {context.num_inputs}.do {{ |i|")
             lines.append("            if(inputs[i].rate != 'audio') {")
             lines.append('                ^("input " ++ i ++ " is not audio rate");')
             lines.append("            };")
@@ -197,11 +225,12 @@ class SuperColliderPlatform(CMakePlatform):
         lines.append("}")
 
         content = "\n".join(lines) + "\n"
-        (output_dir / f"{ugen_name}.sc").write_text(content, encoding="utf-8")
+        (output_dir / f"{context.ugen_name}.sc").write_text(content, encoding="utf-8")
 
     @staticmethod
     def _sanitize_sc_arg(name: str) -> str:
-        """Sanitize a parameter name for use as an SC method argument.
+        """
+        Sanitize a parameter name for use as an SC method argument.
 
         SC identifiers must start with a lowercase letter and contain
         only alphanumeric characters and underscores.
@@ -224,37 +253,30 @@ class SuperColliderPlatform(CMakePlatform):
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        ugen_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        num_params: int,
-        use_shared_cache: str = "OFF",
-        cache_dir: str = "",
-        remap_defines: str = "",
+        context: ScCmakeContext,
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
-            raise ProjectError(f"CMakeLists.txt template not found at {template_path}")
+            msg = f"CMakeLists.txt template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
         content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
-            ugen_name=ugen_name,
+            gen_name=context.gen_name,
+            lib_name=context.lib_name,
+            ugen_name=context.ugen_name,
             genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            num_params=num_params,
-            use_shared_cache=use_shared_cache,
-            cache_dir=cache_dir,
-            remap_defines=remap_defines,
+            num_inputs=context.num_inputs,
+            num_outputs=context.num_outputs,
+            num_params=context.num_params,
+            use_shared_cache=context.use_shared_cache,
+            cache_dir=context.cache_dir,
+            remap_defines=context.remap_defines,
         )
         output_path.write_text(content, encoding="utf-8")
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built SC UGen binary."""
         build_dir = project_dir / "build"
         if build_dir.is_dir():

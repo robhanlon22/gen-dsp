@@ -9,7 +9,6 @@ at configure time via CMake FetchContent -- no vendoring required.
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.manifest import Manifest, build_remap_defines
 from gen_dsp.core.midi import build_midi_defines
@@ -34,12 +33,13 @@ class ClapPlatform(CMakePlatform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate CLAP project files."""
         templates_dir = get_clap_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"CLAP templates not found at {templates_dir}")
+            msg = f"CLAP templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -72,14 +72,17 @@ class ClapPlatform(CMakePlatform):
         self._generate_cmakelists(
             templates_dir / "CMakeLists.txt.template",
             output_dir / "CMakeLists.txt",
-            manifest.gen_name,
-            lib_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            use_shared_cache=use_shared_cache,
-            cache_dir=cache_dir,
-            midi_defines=midi_defines,
-            remap_defines=remap_defines,
+            {
+                "gen_name": manifest.gen_name,
+                "lib_name": lib_name,
+                "genext_version": self.GENEXT_VERSION,
+                "num_inputs": manifest.num_inputs,
+                "num_outputs": manifest.num_outputs,
+                "use_shared_cache": use_shared_cache,
+                "cache_dir": cache_dir,
+                "midi_defines": midi_defines,
+                "remap_defines": remap_defines,
+            },
         )
 
         # Generate gen_buffer.h using base class method
@@ -97,35 +100,19 @@ class ClapPlatform(CMakePlatform):
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        use_shared_cache: str = "OFF",
-        cache_dir: str = "",
-        midi_defines: str = "",
-        remap_defines: str = "",
+        substitutions: dict[str, object],
     ) -> None:
         """Generate CMakeLists.txt from template."""
         if not template_path.exists():
-            raise ProjectError(f"CMakeLists.txt template not found at {template_path}")
+            msg = f"CMakeLists.txt template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
-        content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
-            genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            use_shared_cache=use_shared_cache,
-            cache_dir=cache_dir,
-            midi_defines=midi_defines,
-            remap_defines=remap_defines,
-        )
+        content = template.safe_substitute(substitutions)
         output_path.write_text(content, encoding="utf-8")
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built CLAP plugin file."""
         build_dir = project_dir / "build"
         if build_dir.is_dir():

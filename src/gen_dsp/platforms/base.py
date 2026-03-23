@@ -4,23 +4,24 @@ Abstract base class for platform implementations.
 Provides common functionality shared across all platforms.
 """
 
-import subprocess
+import shutil
 from abc import ABC, abstractmethod
 from enum import Enum
 from pathlib import Path
 from string import Template
-from typing import Optional
-
-import shutil
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError
+from gen_dsp.platforms.command import CommandResult
+from gen_dsp.platforms.command import run_command as run_external_command
+from gen_dsp.templates import get_templates_dir
 
 
 class PluginCategory(Enum):
-    """Plugin category based on I/O configuration.
+    """
+    Plugin category based on I/O configuration.
 
     EFFECT: has audio inputs (processes existing audio)
     GENERATOR: no audio inputs (synthesizes audio)
@@ -56,7 +57,7 @@ class Platform(ABC):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """
         Generate project files for this platform.
@@ -66,13 +67,14 @@ class Platform(ABC):
             output_dir: Directory to generate project in.
             lib_name: Name for the external library.
             config: Optional ProjectConfig for platform-specific options.
+
         """
-        pass
 
     @abstractmethod
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
@@ -86,8 +88,8 @@ class Platform(ABC):
 
         Returns:
             BuildResult with build status and output file.
+
         """
-        pass
 
     @abstractmethod
     def clean(self, project_dir: Path) -> None:
@@ -96,11 +98,11 @@ class Platform(ABC):
 
         Args:
             project_dir: Path to the project directory.
+
         """
-        pass
 
     @abstractmethod
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """
         Find the built external file.
 
@@ -109,8 +111,8 @@ class Platform(ABC):
 
         Returns:
             Path to the built external or None if not found.
+
         """
-        pass
 
     def get_build_instructions(self) -> list[str]:
         """
@@ -118,6 +120,7 @@ class Platform(ABC):
 
         Returns:
             List of command strings to show the user.
+
         """
         return [f"# Build instructions for {self.name} not available"]
 
@@ -128,16 +131,19 @@ class Platform(ABC):
     def _build_with_cmake(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
-        """Build a project using CMake (configure + build).
+        """
+        Build a project using CMake (configure + build).
 
         Shared by all CMake-based platforms (AU, CLAP, VST3, LV2, SC, Max).
         """
         cmakelists = project_dir / "CMakeLists.txt"
         if not cmakelists.exists():
-            raise BuildError(f"CMakeLists.txt not found in {project_dir}")
+            msg = f"CMakeLists.txt not found in {project_dir}"
+            raise BuildError(msg)
 
         build_dir = project_dir / "build"
 
@@ -179,9 +185,10 @@ class Platform(ABC):
             shutil.rmtree(build_dir)
 
     def copy_voice_alloc_header(
-        self, output_dir: Path, config: Optional[ProjectConfig] = None
+        self, output_dir: Path, config: ProjectConfig | None = None
     ) -> None:
-        """Copy voice_alloc.h to output_dir when polyphony is enabled (NUM_VOICES > 1).
+        """
+        Copy voice_alloc.h to output_dir when polyphony is enabled (NUM_VOICES > 1).
 
         Only copies when the config has a MIDI mapping with num_voices > 1.
         """
@@ -190,33 +197,29 @@ class Platform(ABC):
         if config.midi_mapping.num_voices <= 1:
             return
 
-        from gen_dsp.templates import get_templates_dir
-
         src = get_templates_dir("shared") / "voice_alloc.h"
         if src.exists():
             shutil.copy2(src, output_dir / "voice_alloc.h")
 
     def copy_remap_header(self, output_dir: Path) -> None:
-        """Copy gen_remap_inputs.h to output_dir.
+        """
+        Copy gen_remap_inputs.h to output_dir.
 
         This header is always included by _ext_*.cpp bridges but compiles to
         nothing unless REMAP_INPUT_COUNT is defined, so it is safe to copy
         unconditionally.
         """
-        from gen_dsp.templates import get_templates_dir
-
         src = get_templates_dir("shared") / "gen_remap_inputs.h"
         if src.exists():
             shutil.copy2(src, output_dir / "gen_remap_inputs.h")
 
     def generate_ext_header(self, output_dir: Path, platform_key: str) -> None:
-        """Generate the standard _ext_{platform}.h header from shared template.
+        """
+        Generate the standard _ext_{platform}.h header from shared template.
 
         Used by platforms with the identical wrapper interface (all except
         PD, Max, and ChucK which have genuinely different headers).
         """
-        from gen_dsp.templates import get_templates_dir
-
         shared_template = get_templates_dir("shared") / "gen_ext_h.template"
         template = Template(shared_template.read_text(encoding="utf-8"))
         content = template.safe_substitute(
@@ -242,17 +245,21 @@ class Platform(ABC):
             output_path: Path to write the generated header.
             buffers: List of buffer names.
             header_comment: Comment to include in fallback generation.
+
         """
         buffer_count = len(buffers)
 
         # Build buffer definitions
-        buffer_defs = []
-        for i, buf_name in enumerate(buffers):
-            buffer_defs.append(f"#define WRAPPER_BUFFER_NAME_{i} {buf_name}")
+        buffer_defs = [
+            f"#define WRAPPER_BUFFER_NAME_{i} {buf_name}"
+            for i, buf_name in enumerate(buffers)
+        ]
 
         # Pad with commented-out placeholders
-        for i in range(len(buffers), 5):
-            buffer_defs.append(f"// #define WRAPPER_BUFFER_NAME_{i} array{i + 1}")
+        buffer_defs.extend(
+            f"// #define WRAPPER_BUFFER_NAME_{i} array{i + 1}"
+            for i in range(len(buffers), 5)
+        )
 
         if template_path.exists():
             template_content = template_path.read_text(encoding="utf-8")
@@ -279,8 +286,9 @@ class Platform(ABC):
         self,
         cmd: list[str],
         cwd: Path,
+        *,
         verbose: bool = False,
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> CommandResult:
         """
         Run a subprocess command with optional output streaming.
 
@@ -293,34 +301,6 @@ class Platform(ABC):
 
         Returns:
             CompletedProcess with captured output.
+
         """
-        if verbose:
-            process = subprocess.Popen(
-                cmd,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-
-            output_lines = []
-            assert process.stdout is not None
-            for line in process.stdout:
-                print(line, end="")
-                output_lines.append(line)
-
-            process.wait()
-
-            return subprocess.CompletedProcess(
-                args=cmd,
-                returncode=process.returncode,
-                stdout="".join(output_lines),
-                stderr="",
-            )
-        else:
-            return subprocess.run(
-                cmd,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-            )
+        return run_external_command(cmd, cwd, verbose=verbose)

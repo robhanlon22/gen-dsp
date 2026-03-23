@@ -1,4 +1,5 @@
-"""Signal routing demo: gate (1-to-N demux) and selector (N-to-1 mux).
+"""
+Signal routing demo: gate (1-to-N demux) and selector (N-to-1 mux).
 
 A mono input is routed to one of three processing paths via GateRoute:
   1. Clean pass-through
@@ -15,8 +16,11 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
 
+from gen_dsp.core.builder import Builder
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
 from gen_dsp.graph import (
     AudioInput,
     AudioOutput,
@@ -30,10 +34,11 @@ from gen_dsp.graph import (
     TriOsc,
     UnaryOp,
 )
-from gen_dsp.core.project import ProjectConfig, ProjectGenerator
+from gen_dsp.graph.visualize import graph_to_dot_file
 
 
 def make_graph() -> Graph:
+    """Build the example graph."""
     return Graph(
         name="signal_router",
         inputs=[AudioInput(id="in1")],
@@ -51,28 +56,22 @@ def make_graph() -> Graph:
         nodes=[
             # -- Gate: route input to one of 3 paths --
             GateRoute(id="gate", a="in1", index="gate_idx", count=3),
-
             # Path 1: clean
             GateOut(id="path_clean", gate="gate", channel=1),
-
             # Path 2: inverted
             GateOut(id="path_inv_raw", gate="gate", channel=2),
             UnaryOp(id="path_inv", op="neg", a="path_inv_raw"),
-
             # Path 3: half amplitude
             GateOut(id="path_half_raw", gate="gate", channel=3),
             BinOp(id="path_half", op="mul", a="path_half_raw", b=0.5),
-
             # Sum the gate outputs (only one is non-zero at a time)
             BinOp(id="gate_sum1", op="add", a="path_clean", b="path_inv"),
             BinOp(id="gate_out", op="add", a="gate_sum1", b="path_half"),
-
             # -- Selector: pick one of two oscillators --
             SinOsc(id="sine", freq="osc_freq"),
             TriOsc(id="tri", freq="osc_freq"),
             Selector(id="osc_chosen", index="osc_select", inputs=["sine", "tri"]),
             BinOp(id="osc_scaled", op="mul", a="osc_chosen", b="osc_level"),
-
             # -- Combine routed signal + selected oscillator --
             BinOp(id="final", op="add", a="gate_out", b="osc_scaled"),
         ],
@@ -80,22 +79,29 @@ def make_graph() -> Graph:
 
 
 def main() -> None:
+    """Run the example CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-p", "--platform", default=None, help="Target platform")
-    parser.add_argument("-l", "--list", action="store_true", help="List available platforms")
-    parser.add_argument("-b", "--build", action="store_true", help="Build after generating")
+    parser.add_argument(
+        "-l", "--list", action="store_true", help="List available platforms"
+    )
+    parser.add_argument(
+        "-b", "--build", action="store_true", help="Build after generating"
+    )
     parser.add_argument("-o", "--output", type=Path, default=None)
-    parser.add_argument("-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF")
+    parser.add_argument(
+        "-d", "--dot", action="store_true", help="Generate Graphviz DOT graph as PDF"
+    )
     args = parser.parse_args()
 
     if args.list:
-        print("Available platforms:", ", ".join(ProjectConfig.list_platforms()))
+        platforms = ", ".join(ProjectConfig.list_platforms())
+        sys.stdout.write(f"Available platforms: {platforms}\n")
         return
     graph = make_graph()
     if args.dot:
-        from gen_dsp.graph.visualize import graph_to_dot_file
-        dot_path = graph_to_dot_file(graph, args.output or Path("."))
-        print(f"DOT: {dot_path}")
+        dot_path = graph_to_dot_file(graph, args.output or Path())
+        sys.stdout.write(f"DOT: {dot_path}\n")
         return
     if not args.platform:
         parser.error("-p/--platform is required (use -l to list available platforms)")
@@ -105,13 +111,14 @@ def main() -> None:
     gen = ProjectGenerator.from_graph(graph, config)
     project_dir = gen.generate(output_dir=output)
 
-    print(f"Project generated at: {project_dir}")
+    sys.stdout.write(f"Project generated at: {project_dir}\n")
     if args.build:
-        from gen_dsp.core.builder import Builder
         result = Builder(project_dir).build(args.platform, verbose=True)
-        print(f"Build {'succeeded' if result.success else 'failed'}: {result}")
+        status = "succeeded" if result.success else "failed"
+        sys.stdout.write(f"Build {status}: {result}\n")
     else:
-        print(f"Build with: cd {project_dir} && cmake -B build && cmake --build build")
+        build_cmd = f"cd {project_dir} && cmake -B build && cmake --build build"
+        sys.stdout.write(f"Build with: {build_cmd}\n")
 
 
 if __name__ == "__main__":

@@ -11,7 +11,8 @@ from pathlib import Path
 
 
 def get_cache_dir() -> Path:
-    """Return the OS-appropriate shared cache directory for FetchContent.
+    """
+    Return the OS-appropriate shared cache directory for FetchContent.
 
     - macOS:   ~/Library/Caches/gen-dsp/fetchcontent/
     - Linux:   $XDG_CACHE_HOME/gen-dsp/fetchcontent/ (defaults to ~/.cache/)

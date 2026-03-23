@@ -10,7 +10,6 @@ import platform as sys_platform
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
@@ -23,10 +22,12 @@ from gen_dsp.templates import get_csound_templates_dir
 def _build_type_strings(
     num_inputs: int, num_outputs: int, num_params: int
 ) -> tuple[str, str]:
-    """Build Csound OENTRY type strings from I/O counts.
+    """
+    Build Csound OENTRY type strings from I/O counts.
 
     Returns:
         (outypes, intypes) -- e.g. ("aa", "aakkkk") for 2in/2out/4params.
+
     """
     outypes = "a" * num_outputs if num_outputs > 0 else "a"
     intypes = "a" * num_inputs + "k" * num_params
@@ -57,12 +58,14 @@ class CsoundPlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate Csound opcode project files."""
+        _ = config
         templates_dir = get_csound_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Csound templates not found at {templates_dir}")
+            msg = f"Csound templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -120,7 +123,8 @@ class CsoundPlatform(Platform):
     ) -> None:
         """Render a template file with the given substitutions."""
         if not template_path.exists():
-            raise ProjectError(f"Template not found at {template_path}")
+            msg = f"Template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -130,13 +134,15 @@ class CsoundPlatform(Platform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build Csound opcode plugin using make."""
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         if clean:
             self.run_command(["make", "clean"], project_dir)
@@ -157,7 +163,7 @@ class CsoundPlatform(Platform):
         """Clean build artifacts."""
         self.run_command(["make", "clean"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built opcode plugin."""
         for ext in (".dylib", ".so"):
             for f in project_dir.glob(f"lib*{ext}"):

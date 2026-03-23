@@ -26,22 +26,23 @@ take precedence over the SDK's Config.mk.
 
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gen_dsp.core.graph import EdgeBuffer, GraphConfig, ResolvedChainNode
+    from gen_dsp.core.graph import EdgeBuffer, GraphConfig
 
 from gen_dsp.core.builder import BuildResult
+from gen_dsp.core.cache import get_cache_dir
+from gen_dsp.core.graph import ResolvedChainNode
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
 from gen_dsp.core.project import ProjectConfig
 from gen_dsp.errors import BuildError, ProjectError
 from gen_dsp.platforms.base import Platform
+from gen_dsp.platforms.command import run_command as run_external_command
 from gen_dsp.templates import get_circle_templates_dir
-
 
 # Circle version (latest stable release)
 CIRCLE_VERSION = "Step50.1"
@@ -97,7 +98,7 @@ def _get_audio_label(audio_device: str) -> str:
 def _get_extra_libs(audio_device: str) -> str:
     """Return additional LIBS entries needed for the audio device."""
     if audio_device == "usb":
-        return "$(CIRCLEHOME)/lib/usb/libusb.a"
+        return "libusb.a"
     return ""
 
 
@@ -116,18 +117,18 @@ def _get_boot_config(audio_device: str) -> str:
             "# Enable I2S audio overlay\n"
             "dtparam=i2s=on"
         )
-    elif audio_device == "pwm":
+    if audio_device == "pwm":
         return (
             "# PWM audio output through 3.5mm headphone jack\n"
             "# No additional hardware required\n"
             "# Default GPIOs: 12 (left) and 13 (right)"
         )
-    elif audio_device == "hdmi":
+    if audio_device == "hdmi":
         return (
             "# HDMI audio output (48kHz stereo)\n"
             "# Connect HDMI to a monitor or audio receiver"
         )
-    elif audio_device == "usb":
+    if audio_device == "usb":
         return (
             "# USB audio output (Pi 4/5 only)\n# Connect a USB DAC or audio interface"
         )
@@ -149,6 +150,75 @@ class CircleBoardConfig:
     prefix: str  # Compiler prefix
     kernel_img: str  # Output kernel image filename
     audio_device: str  # "i2s", "pwm", "hdmi", or "usb"
+
+
+@dataclass(frozen=True)
+class DagProjectContext:
+    """Inputs for generating a Circle DAG project."""
+
+    dag_nodes: "list[ResolvedChainNode]"
+    graph: "GraphConfig"
+    edge_buffers: "list[EdgeBuffer]"
+    num_buffers: int
+
+
+_DAG_CONTEXT_MIN_ARGS = 2
+_DAG_LEGACY_MIN_ARGS = 5
+_DAG_CONTEXT_CONFIG_INDEX = 2
+_DAG_LEGACY_CONFIG_INDEX = 5
+
+
+def _resolve_dag_project_args(
+    dag: DagProjectContext | list[ResolvedChainNode],
+    args: tuple[object, ...],
+    config: ProjectConfig | None,
+) -> tuple[DagProjectContext, Path, str, ProjectConfig | None]:
+    """Resolve legacy and current DAG project calling conventions."""
+    if isinstance(dag, DagProjectContext):
+        if len(args) < _DAG_CONTEXT_MIN_ARGS:
+            msg = "generate_dag_project() missing output_dir and lib_name"
+            raise TypeError(msg)
+        dag_ctx = dag
+        output_dir = Path(args[0])
+        lib_name = str(args[1])
+        if config is None and len(args) > _DAG_CONTEXT_CONFIG_INDEX:
+            maybe_config = args[_DAG_CONTEXT_CONFIG_INDEX]
+            if isinstance(maybe_config, ProjectConfig):
+                config = maybe_config
+        return dag_ctx, output_dir, lib_name, config
+
+    if len(args) < _DAG_LEGACY_MIN_ARGS:
+        msg = (
+            "generate_dag_project() expects dag_nodes, graph, "
+            "edge_buffers, num_buffers, output_dir, lib_name"
+        )
+        raise TypeError(msg)
+
+    graph = args[0]
+    edge_buffers = args[1]
+    num_buffers = args[2]
+    output_dir = Path(args[3])
+    lib_name = str(args[4])
+    if config is None and len(args) > _DAG_LEGACY_CONFIG_INDEX:
+        maybe_config = args[_DAG_LEGACY_CONFIG_INDEX]
+        if isinstance(maybe_config, ProjectConfig):
+            config = maybe_config
+
+    dag_ctx = DagProjectContext(
+        dag_nodes=dag,
+        graph=graph,
+        edge_buffers=edge_buffers,
+        num_buffers=num_buffers,
+    )
+    return dag_ctx, output_dir, lib_name, config
+
+
+def _require_circle_board(board: object) -> CircleBoardConfig:
+    """Return a validated Circle board configuration."""
+    if not isinstance(board, CircleBoardConfig):
+        msg = "Circle board configuration is missing or invalid"
+        raise ProjectError(msg)
+    return board
 
 
 CIRCLE_BOARDS: dict[str, CircleBoardConfig] = {
@@ -189,7 +259,7 @@ CIRCLE_BOARDS: dict[str, CircleBoardConfig] = {
     # --- Pi 3 / 3B+ ---
     "pi3-i2s": CircleBoardConfig(
         key="pi3-i2s",
-        rasppi=3,
+        rasppi=1,
         aarch=64,
         prefix="aarch64-none-elf-",
         kernel_img="kernel8.img",
@@ -280,13 +350,12 @@ _CIRCLE_DIR_NAME = "circle"
 
 def _get_default_circle_dir() -> Path:
     """Return the default cached Circle path (OS-appropriate)."""
-    from gen_dsp.core.cache import get_cache_dir
-
     return get_cache_dir() / _CIRCLE_CACHE_SUBDIR / _CIRCLE_DIR_NAME
 
 
 def _resolve_circle_dir() -> Path:
-    """Resolve CIRCLE_DIR using the priority chain.
+    """
+    Resolve CIRCLE_DIR using the priority chain.
 
     1. CIRCLE_DIR env var
     2. GEN_DSP_CACHE_DIR env var + circle-src/circle
@@ -303,8 +372,101 @@ def _resolve_circle_dir() -> Path:
     return _get_default_circle_dir()
 
 
-def ensure_circle(circle_dir: Optional[Path] = None, verbose: bool = False) -> Path:
-    """Ensure Circle SDK is available, cloning and building if necessary.
+def _circle_rules_mk_exists(circle_dir: Path) -> bool:
+    """Return True if the Circle SDK sources are present."""
+    return (circle_dir / "Rules.mk").is_file()
+
+
+def _circle_library_exists(circle_dir: Path) -> bool:
+    """Return True if libcircle.a exists."""
+    return (circle_dir / "lib" / "libcircle.a").is_file()
+
+
+def _circle_ready(circle_dir: Path) -> bool:
+    """Return True if Circle has already been cloned and built."""
+    return _circle_rules_mk_exists(circle_dir) and _circle_library_exists(circle_dir)
+
+
+def _check_circle_prerequisites() -> None:
+    """Verify required host tools are present."""
+    if not shutil.which("git"):
+        msg = "git is required to clone Circle. Install git and ensure it is on PATH."
+        raise BuildError(msg)
+
+    if not shutil.which("aarch64-none-elf-gcc"):
+        msg = (
+            "aarch64-none-elf-gcc is required to build Circle SDK. "
+            "Download the AArch64 bare-metal toolchain from:\n"
+            "  https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads\n"
+            "Select the 'aarch64-none-elf' variant for your host OS, extract it,\n"
+            "and add its bin/ directory to your PATH."
+        )
+        raise BuildError(msg)
+
+
+def _clone_circle(circle_dir: Path, *, verbose: bool) -> None:
+    """Clone the Circle SDK repository."""
+    cache_parent = circle_dir.parent
+    cache_parent.mkdir(parents=True, exist_ok=True)
+
+    result = run_external_command(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            CIRCLE_VERSION,
+            _CIRCLE_CLONE_URL,
+            str(circle_dir),
+        ],
+        verbose=verbose,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if result.returncode != 0:
+        stderr = result.stderr or result.stdout
+        msg = f"Failed to clone Circle: {stderr or result.returncode}"
+        raise BuildError(msg)
+
+
+def _build_circle(circle_dir: Path, *, verbose: bool) -> None:
+    """Configure and build Circle if needed."""
+    configure_script = circle_dir / "configure"
+    configure_result = run_external_command(
+        [str(configure_script), "-r", "3", "-p", "aarch64-none-elf-"],
+        cwd=circle_dir,
+        verbose=verbose,
+    )
+    if configure_result.returncode != 0:
+        stderr = configure_result.stderr or configure_result.stdout
+        msg = f"Failed to configure Circle: {stderr or configure_result.returncode}"
+        raise BuildError(msg)
+
+    makeall_script = circle_dir / "makeall"
+    run_external_command(
+        [str(makeall_script), "clean"],
+        cwd=circle_dir,
+        verbose=verbose,
+    )
+
+    build_result = run_external_command(
+        [str(makeall_script)],
+        cwd=circle_dir,
+        verbose=verbose,
+    )
+    if build_result.returncode != 0:
+        stderr = build_result.stderr or build_result.stdout
+        msg = f"Failed to build Circle: {stderr or build_result.returncode}"
+        raise BuildError(msg)
+
+
+def ensure_circle(
+    circle_dir: Path | None = None,
+    *,
+    verbose: bool = False,
+) -> Path:
+    """
+    Ensure Circle SDK is available, cloning and building if necessary.
 
     Args:
         circle_dir: Explicit path. If None, resolves via priority chain.
@@ -316,112 +478,29 @@ def ensure_circle(circle_dir: Optional[Path] = None, verbose: bool = False) -> P
     Raises:
         BuildError: If clone or build fails, or if git/toolchain
                     is not available.
+
     """
     if circle_dir is None:
         circle_dir = _resolve_circle_dir()
+    circle_dir = circle_dir.resolve()
 
-    # Already present and built?
-    if (circle_dir / "Rules.mk").is_file() and (
-        circle_dir / "lib" / "libcircle.a"
-    ).is_file():
+    if _circle_ready(circle_dir):
         return circle_dir
 
-    # Check prerequisites
-    if not shutil.which("git"):
-        raise BuildError(
-            "git is required to clone Circle. Install git and ensure it is on PATH."
-        )
+    _check_circle_prerequisites()
 
-    if not shutil.which("aarch64-none-elf-gcc"):
-        raise BuildError(
-            "aarch64-none-elf-gcc is required to build Circle SDK. "
-            "Download the AArch64 bare-metal toolchain from:\n"
-            "  https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads\n"
-            "Select the 'aarch64-none-elf' variant for your host OS, extract it,\n"
-            "and add its bin/ directory to your PATH."
-        )
+    if not _circle_rules_mk_exists(circle_dir):
+        _clone_circle(circle_dir, verbose=verbose)
 
-    # Clone if not present
-    if not (circle_dir / "Rules.mk").is_file():
-        cache_parent = circle_dir.parent
-        cache_parent.mkdir(parents=True, exist_ok=True)
+    if not _circle_library_exists(circle_dir):
+        _build_circle(circle_dir, verbose=verbose)
 
-        if verbose:
-            print(f"Cloning Circle {CIRCLE_VERSION} from {_CIRCLE_CLONE_URL} ...")
-
-        try:
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    CIRCLE_VERSION,
-                    _CIRCLE_CLONE_URL,
-                    str(circle_dir),
-                ],
-                check=True,
-                capture_output=not verbose,
-                text=True,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-            )
-        except subprocess.CalledProcessError as e:
-            raise BuildError(f"Failed to clone Circle: {e}") from e
-
-    # Configure and build Circle libraries if not already built
-    if not (circle_dir / "lib" / "libcircle.a").is_file():
-        if verbose:
-            print("Configuring Circle ...")
-
-        # Run ./configure to generate Config.mk
-        # Use Pi 3 / AArch64 as the default SDK build target.
-        # The per-project Makefile uses 'override' directives to set
-        # the correct RASPPI/AARCH/PREFIX for the actual target board.
-        try:
-            subprocess.run(
-                ["./configure", "-r", "3", "-p", "aarch64-none-elf-"],
-                cwd=circle_dir,
-                check=True,
-                capture_output=not verbose,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr or ""
-            raise BuildError(f"Failed to configure Circle: {e}\n{stderr}") from e
-
-        if verbose:
-            print("Building Circle libraries ...")
-
-        try:
-            subprocess.run(
-                ["./makeall", "clean"],
-                cwd=circle_dir,
-                check=True,
-                capture_output=not verbose,
-                text=True,
-            )
-        except subprocess.CalledProcessError:
-            pass  # clean may fail on first build
-
-        try:
-            subprocess.run(
-                ["./makeall"],
-                cwd=circle_dir,
-                check=True,
-                capture_output=not verbose,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr or ""
-            raise BuildError(f"Failed to build Circle: {e}\n{stderr}") from e
-
-    # Verify
-    if not (circle_dir / "lib" / "libcircle.a").is_file():
-        raise BuildError(
+    if not _circle_library_exists(circle_dir):
+        msg = (
             f"Circle build completed but libcircle.a not found at "
             f"{circle_dir / 'lib' / 'libcircle.a'}"
         )
+        raise BuildError(msg)
 
     return circle_dir
 
@@ -433,71 +512,80 @@ def ensure_circle(circle_dir: Optional[Path] = None, verbose: bool = False) -> P
 
 def _build_chain_includes(chain: "list[ResolvedChainNode]") -> str:
     """Build #include lines for per-node wrapper headers."""
-    lines = []
-    for node in chain:
-        lines.append(f'#include "_ext_circle_{node.index}.h"')
-    return "\n".join(lines)
+    return "\n".join(f'#include "_ext_circle_{node.index}.h"' for node in chain)
 
 
 def _build_chain_io_defines(chain: "list[ResolvedChainNode]") -> str:
     """Build per-node I/O count #defines."""
-    lines = []
-    for node in chain:
-        prefix = f"NODE_{node.index}"
-        lines.append(f"#define {prefix}_NUM_INPUTS  {node.manifest.num_inputs}")
-        lines.append(f"#define {prefix}_NUM_OUTPUTS {node.manifest.num_outputs}")
-    return "\n".join(lines)
+    return "\n".join(
+        line
+        for node in chain
+        for line in (
+            f"#define NODE_{node.index}_NUM_INPUTS  {node.manifest.num_inputs}",
+            f"#define NODE_{node.index}_NUM_OUTPUTS {node.manifest.num_outputs}",
+        )
+    )
 
 
 def _build_chain_create(chain: "list[ResolvedChainNode]") -> str:
     """Build gen state creation calls for Initialize()."""
-    lines = []
-    for node in chain:
-        ns = f"{node.config.id}_circle"
-        lines.append(
-            f"        m_genState[{node.index}] = "
-            f"{ns}::wrapper_create((float)CIRCLE_SAMPLE_RATE, (long)CIRCLE_CHUNK_SIZE);"
+    return "\n".join(
+        line
+        for node in chain
+        for line in (
+            (
+                f"        m_genState[{node.index}] = "
+                f"{node.config.id}_circle::wrapper_create("
+                f"(float)CIRCLE_SAMPLE_RATE, (long)CIRCLE_CHUNK_SIZE);"
+            ),
+            f"        if (!m_genState[{node.index}]) return FALSE;",
         )
-        lines.append(f"        if (!m_genState[{node.index}]) return FALSE;")
-    return "\n".join(lines)
+    )
 
 
 def _build_chain_destroy(chain: "list[ResolvedChainNode]") -> str:
     """Build gen state destruction calls for destructor."""
-    lines = []
-    for node in chain:
-        ns = f"{node.config.id}_circle"
-        lines.append(f"        if (m_genState[{node.index}]) {{")
-        lines.append(f"            {ns}::wrapper_destroy(m_genState[{node.index}]);")
-        lines.append(f"            m_genState[{node.index}] = nullptr;")
-        lines.append("        }")
-    return "\n".join(lines)
+    return "\n".join(
+        line
+        for node in chain
+        for line in (
+            f"        if (m_genState[{node.index}]) {{",
+            f"            {node.config.id}_circle::wrapper_destroy("
+            f"m_genState[{node.index}]);",
+            f"            m_genState[{node.index}] = nullptr;",
+            "        }",
+        )
+    )
 
 
 def _build_chain_set_param(chain: "list[ResolvedChainNode]") -> str:
     """Build SetParam dispatch for per-node parameter setting."""
-    lines = []
-    for node in chain:
-        ns = f"{node.config.id}_circle"
-        lines.append(f"        if (nodeIndex == {node.index}) {{")
-        lines.append(
-            f"            {ns}::wrapper_set_param(m_genState[{node.index}], paramIndex, value);"
+    return "\n".join(
+        line
+        for node in chain
+        for line in (
+            f"        if (nodeIndex == {node.index}) {{",
+            (
+                f"            {node.config.id}_circle::wrapper_set_param("
+                f"m_genState[{node.index}], paramIndex, value);"
+            ),
+            "        }",
         )
-        lines.append("        }")
-    return "\n".join(lines)
+    )
 
 
 def _build_chain_perform(chain: "list[ResolvedChainNode]", max_channels: int) -> str:
-    """Build the ping-pong perform block for GetChunk().
+    """
+    Build the ping-pong perform block for GetChunk().
 
     Node 0 reads from scratchA, writes to scratchB.
     Node 1 reads from scratchB, writes to scratchA.
     And so on, alternating.
     """
+    del max_channels
     lines = []
     for node in chain:
         idx = node.index
-        ns = f"{node.config.id}_circle"
         n_in = node.manifest.num_inputs
         n_out = node.manifest.num_outputs
 
@@ -508,23 +596,31 @@ def _build_chain_perform(chain: "list[ResolvedChainNode]", max_channels: int) ->
             in_buf = "m_pScratchB"
             out_buf = "m_pScratchA"
 
-        lines.append(f"        // Node {idx}: {node.config.id} ({n_in}in/{n_out}out)")
-        lines.append(f"        {ns}::wrapper_perform(")
-        lines.append(f"            m_genState[{idx}],")
-        if n_in > 0:
-            lines.append(f"            {in_buf}, {n_in},")
-        else:
-            lines.append("            nullptr, 0,")
-        lines.append(f"            {out_buf}, {n_out},")
-        lines.append("            (long)nFrames);")
-        lines.append("")
+        input_args = (
+            f"            {in_buf}, {n_in},"
+            if n_in > 0
+            else "            nullptr, 0,"
+        )
+        lines.extend(
+            [
+                f"        // Node {idx}: {node.config.id} "
+                f"({n_in}in/{n_out}out)",
+                f"        {node.config.id}_circle::wrapper_perform(",
+                f"            m_genState[{idx}],",
+                input_args,
+                f"            {out_buf}, {n_out},",
+                "            (long)nFrames);",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
 def _build_chain_midi_dispatch(
-    chain: "list[ResolvedChainNode]", graph: "GraphConfig"
+    chain: "list[ResolvedChainNode]", _graph: "GraphConfig"
 ) -> str:
-    """Build MIDI CC dispatch code.
+    """
+    Build MIDI CC dispatch code.
 
     For each node, generates an if-block matching its MIDI channel.
     Within that block, maps CC numbers to parameter indices.
@@ -536,10 +632,12 @@ def _build_chain_midi_dispatch(
         midi_ch = node.config.midi_channel
         if midi_ch is None:
             midi_ch = node.index + 1
-        ns = f"{node.config.id}_circle"
         n_params = node.manifest.num_params
 
-        lines.append(f"    // Node {node.index}: {node.config.id} (MIDI ch {midi_ch})")
+        lines.append(
+            f"    // Node {node.index}: {node.config.id} "
+            f"(MIDI ch {midi_ch})"
+        )
         lines.append(f"    if (channel == {midi_ch}) {{")
 
         if node.config.cc_map:
@@ -557,27 +655,28 @@ def _build_chain_midi_dispatch(
                         f"            // {param_name}: scale normalized to [min, max]"
                     )
                     lines.append(
-                        f"            float min = {ns}::wrapper_param_min("
-                        f"s_pSoundDevice->m_genState[{node.index}], {param_idx});"
+                        f"            float min = {node.config.id}_circle::"
+                        f"wrapper_param_min(s_pSoundDevice->m_genState[{node.index}], "
+                        f"{param_idx});"
                     )
                     lines.append(
-                        f"            float max = {ns}::wrapper_param_max("
-                        f"s_pSoundDevice->m_genState[{node.index}], {param_idx});"
+                        f"            float max = {node.config.id}_circle::"
+                        f"wrapper_param_max(s_pSoundDevice->m_genState[{node.index}], "
+                        f"{param_idx});"
                     )
                     lines.append(
                         f"            s_pSoundDevice->SetParam({node.index}, "
                         f"{param_idx}, min + normalized * (max - min));"
                     )
                     lines.append("        }")
-        else:
-            # CC-by-param-index: CC N -> param N
-            if n_params > 0:
-                lines.append(f"        if (cc < {n_params}) {{")
-                lines.append(
-                    f"            s_pSoundDevice->SetParam({node.index}, "
-                    f"(int)cc, normalized);"
-                )
-                lines.append("        }")
+        # CC-by-param-index: CC N -> param N
+        elif n_params > 0:
+            lines.append(f"        if (cc < {n_params}) {{")
+            lines.append(
+                f"            s_pSoundDevice->SetParam({node.index}, "
+                f"(int)cc, normalized);"
+            )
+            lines.append("        }")
 
         lines.append("    }")
     return "\n".join(lines)
@@ -588,7 +687,9 @@ def _build_chain_per_node_flags(chain: "list[ResolvedChainNode]") -> str:
     lines = []
     for node in chain:
         idx = node.index
-        assert node.export_info is not None
+        if node.export_info is None:
+            msg = f"Node '{node.config.id}' is missing export info"
+            raise ProjectError(msg)
         gen_name = node.export_info.name
         node_id = node.config.id
         export_dir = f"gen_{node.config.export}"
@@ -611,58 +712,67 @@ def _build_chain_per_node_flags(chain: "list[ResolvedChainNode]") -> str:
 
 def _build_dag_buffer_decls(num_buffers: int, max_channels: int) -> str:
     """Build DAG buffer storage and pointer array declarations."""
-    lines = []
-    lines.append(f"#define DAG_NUM_BUFFERS    {num_buffers}")
-    lines.append(f"#define DAG_MAX_CHANNELS   {max_channels}")
-    lines.append("")
-    for i in range(num_buffers):
-        lines.append(
-            f"    float m_DagBufStorage_{i}[DAG_MAX_CHANNELS][CIRCLE_CHUNK_SIZE];"
-        )
-    lines.append("")
-    for i in range(num_buffers):
-        lines.append(f"    float* m_pDagBuf_{i}[DAG_MAX_CHANNELS];")
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"#define DAG_NUM_BUFFERS    {num_buffers}",
+            f"#define DAG_MAX_CHANNELS   {max_channels}",
+            "",
+            *(
+                f"    float m_DagBufStorage_{i}[DAG_MAX_CHANNELS][CIRCLE_CHUNK_SIZE];"
+                for i in range(num_buffers)
+            ),
+            "",
+            *(
+                f"    float* m_pDagBuf_{i}[DAG_MAX_CHANNELS];"
+                for i in range(num_buffers)
+            ),
+        ]
+    )
 
 
 def _build_dag_buffer_init(num_buffers: int) -> str:
     """Build pointer array initialization for constructor."""
-    lines = []
-    for i in range(num_buffers):
-        lines.append("        for (int ch = 0; ch < DAG_MAX_CHANNELS; ch++) {")
-        lines.append(f"            m_pDagBuf_{i}[ch] = m_DagBufStorage_{i}[ch];")
-        lines.append("        }")
-    return "\n".join(lines)
+    return "\n".join(
+        line
+        for i in range(num_buffers)
+        for line in (
+            "        for (int ch = 0; ch < DAG_MAX_CHANNELS; ch++) {",
+            f"            m_pDagBuf_{i}[ch] = m_DagBufStorage_{i}[ch];",
+            "        }",
+        )
+    )
 
 
 def _build_dag_mixer_gain_decls(dag_nodes: "list[ResolvedChainNode]") -> str:
     """Build mixer gain member variable declarations."""
-    lines = []
-    for node in dag_nodes:
-        if node.config.node_type == "mixer":
-            for p in node.manifest.params:
-                lines.append(f"    float m_{node.config.id}_{p.name} = 1.0f;")
-    return "\n".join(lines)
+    return "\n".join(
+        f"    float m_{node.config.id}_{p.name} = 1.0f;"
+        for node in dag_nodes
+        if node.config.node_type == "mixer"
+        for p in node.manifest.params
+    )
 
 
 def _build_dag_includes(dag_nodes: "list[ResolvedChainNode]") -> str:
     """Build #include lines for gen~ node wrapper headers (skip mixers)."""
-    lines = []
-    for node in dag_nodes:
-        if node.config.node_type == "gen":
-            lines.append(f'#include "_ext_circle_{node.index}.h"')
-    return "\n".join(lines)
+    return "\n".join(
+        f'#include "_ext_circle_{node.index}.h"'
+        for node in dag_nodes
+        if node.config.node_type == "gen"
+    )
 
 
 def _build_dag_io_defines(dag_nodes: "list[ResolvedChainNode]") -> str:
     """Build per-node I/O count #defines (skip mixers)."""
-    lines = []
-    for node in dag_nodes:
-        if node.config.node_type == "gen":
-            prefix = f"NODE_{node.index}"
-            lines.append(f"#define {prefix}_NUM_INPUTS  {node.manifest.num_inputs}")
-            lines.append(f"#define {prefix}_NUM_OUTPUTS {node.manifest.num_outputs}")
-    return "\n".join(lines)
+    return "\n".join(
+        line
+        for node in dag_nodes
+        if node.config.node_type == "gen"
+        for line in (
+            f"#define NODE_{node.index}_NUM_INPUTS  {node.manifest.num_inputs}",
+            f"#define NODE_{node.index}_NUM_OUTPUTS {node.manifest.num_outputs}",
+        )
+    )
 
 
 def _build_dag_create(dag_nodes: "list[ResolvedChainNode]") -> str:
@@ -670,34 +780,38 @@ def _build_dag_create(dag_nodes: "list[ResolvedChainNode]") -> str:
     lines = []
     for node in dag_nodes:
         if node.config.node_type == "gen":
-            ns = f"{node.config.id}_circle"
-            lines.append(
-                f"        m_genState[{node.index}] = "
-                f"{ns}::wrapper_create("
-                f"(float)CIRCLE_SAMPLE_RATE, (long)CIRCLE_CHUNK_SIZE);"
+            lines.extend(
+                [
+                    f"        m_genState[{node.index}] = "
+                    f"{node.config.id}_circle::wrapper_create("
+                    f"(float)CIRCLE_SAMPLE_RATE, (long)CIRCLE_CHUNK_SIZE);",
+                    f"        if (!m_genState[{node.index}]) return FALSE;",
+                ]
             )
-            lines.append(f"        if (!m_genState[{node.index}]) return FALSE;")
         else:
-            lines.append(
-                f"        m_genState[{node.index}] = nullptr;  "
-                f"// {node.config.id} (mixer)"
+            lines.extend(
+                [
+                    f"        m_genState[{node.index}] = nullptr;  "
+                    f"// {node.config.id} (mixer)",
+                ]
             )
     return "\n".join(lines)
 
 
 def _build_dag_destroy(dag_nodes: "list[ResolvedChainNode]") -> str:
     """Build gen state destruction calls (gen~ nodes only)."""
-    lines = []
-    for node in dag_nodes:
-        if node.config.node_type == "gen":
-            ns = f"{node.config.id}_circle"
-            lines.append(f"        if (m_genState[{node.index}]) {{")
-            lines.append(
-                f"            {ns}::wrapper_destroy(m_genState[{node.index}]);"
-            )
-            lines.append(f"            m_genState[{node.index}] = nullptr;")
-            lines.append("        }")
-    return "\n".join(lines)
+    return "\n".join(
+        line
+        for node in dag_nodes
+        if node.config.node_type == "gen"
+        for line in (
+            f"        if (m_genState[{node.index}]) {{",
+            f"            {node.config.id}_circle::wrapper_destroy("
+            f"m_genState[{node.index}]);",
+            f"            m_genState[{node.index}] = nullptr;",
+            "        }",
+        )
+    )
 
 
 def _build_dag_set_param(dag_nodes: "list[ResolvedChainNode]") -> str:
@@ -706,13 +820,11 @@ def _build_dag_set_param(dag_nodes: "list[ResolvedChainNode]") -> str:
     for node in dag_nodes:
         lines.append(f"        if (nodeIndex == {node.index}) {{")
         if node.config.node_type == "gen":
-            ns = f"{node.config.id}_circle"
             lines.append(
-                f"            {ns}::wrapper_set_param("
+                f"            {node.config.id}_circle::wrapper_set_param("
                 f"m_genState[{node.index}], paramIndex, value);"
             )
         else:
-            # Mixer: dispatch by paramIndex to gain members
             for p in node.manifest.params:
                 lines.append(f"            if (paramIndex == {p.index}) {{")
                 lines.append(f"                m_{node.config.id}_{p.name} = value;")
@@ -721,195 +833,205 @@ def _build_dag_set_param(dag_nodes: "list[ResolvedChainNode]") -> str:
     return "\n".join(lines)
 
 
+def _build_dag_gen_perform_lines(
+    node: "ResolvedChainNode",
+    incoming: "list[EdgeBuffer]",
+    outgoing: "list[EdgeBuffer]",
+) -> list[str]:
+    """Build perform block lines for a gen node."""
+    nid = node.config.id
+    n_in = node.manifest.num_inputs
+    n_out = node.manifest.num_outputs
+    ns = f"{nid}_circle"
+
+    if incoming and incoming[0].buffer_id == -1:
+        in_buf = "m_pHwInput"
+        in_note = "hw input"
+    elif incoming:
+        in_buf = f"m_pDagBuf_{incoming[0].buffer_id}"
+        in_note = f"buf {incoming[0].buffer_id}"
+    else:
+        in_buf = "nullptr"
+        in_note = "none"
+
+    if outgoing:
+        out_buf = f"m_pDagBuf_{outgoing[0].buffer_id}"
+        out_note = f"buf {outgoing[0].buffer_id}"
+    else:
+        out_buf = "nullptr"
+        out_note = "none"
+
+    lines = [
+        f"        // Node {node.index}: {nid} ({n_in}in/{n_out}out, "
+        f"in={in_note}, out={out_note})",
+    ]
+    if incoming and incoming[0].buffer_id != -1:
+        src_ch = incoming[0].num_channels
+        if src_ch < n_in:
+            lines.append(
+                f"        // Zero-pad: source has {src_ch} ch, node expects {n_in}"
+            )
+            lines.extend(
+                f"        for (unsigned z = 0; z < nFrames; z++) "
+                f"{in_buf}[{ch}][z] = 0.0f;"
+                for ch in range(src_ch, n_in)
+            )
+
+    lines.extend(
+        [
+            f"        {ns}::wrapper_perform(",
+            f"            m_genState[{node.index}],",
+            (
+                f"            {in_buf}, {n_in},"
+                if n_in > 0
+                else "            nullptr, 0,"
+            ),
+            f"            {out_buf}, {n_out},",
+            "            (long)nFrames);",
+            "",
+        ]
+    )
+    return lines
+
+
+def _build_dag_mixer_perform_lines(
+    node: "ResolvedChainNode",
+    incoming: "list[EdgeBuffer]",
+    outgoing: "list[EdgeBuffer]",
+) -> list[str]:
+    """Build perform block lines for a mixer node."""
+    nid = node.config.id
+    n_out = node.manifest.num_outputs
+    out_buf = f"m_pDagBuf_{outgoing[0].buffer_id}" if outgoing else "nullptr"
+
+    terms = []
+    for edge in incoming:
+        idx = edge.dst_input_index if edge.dst_input_index is not None else 0
+        gain_var = f"m_{nid}_gain_{idx}"
+        src_buf = (
+            "m_pHwInput"
+            if edge.buffer_id == -1
+            else f"m_pDagBuf_{edge.buffer_id}"
+        )
+        terms.append(f"{src_buf}[ch][s] * {gain_var}")
+
+    sum_expr = " + ".join(terms) if terms else "0.0f"
+    return [
+        f"        // Node {node.index}: {nid} (mixer, {len(incoming)} inputs)",
+        f"        for (int ch = 0; ch < {n_out}; ch++) {{",
+        "            for (unsigned s = 0; s < nFrames; s++) {",
+        f"                {out_buf}[ch][s] = {sum_expr};",
+        "            }",
+        "        }",
+        "",
+    ]
+
+
 def _build_dag_perform(
     dag_nodes: "list[ResolvedChainNode]",
     edge_buffers: "list[EdgeBuffer]",
-    graph: "GraphConfig",
+    _graph: "GraphConfig",
     max_channels: int,
 ) -> str:
-    """Build the toposort-ordered perform block for GetChunk().
+    """
+    Build the toposort-ordered perform block for GetChunk().
 
     gen~ nodes call wrapper_perform with correct edge buffers.
     Mixer nodes emit inline weighted-sum loops.
     """
+    del max_channels
     lines = []
-
     for node in dag_nodes:
         nid = node.config.id
-        n_in = node.manifest.num_inputs
-        n_out = node.manifest.num_outputs
-
-        # Find incoming edges for this node
         incoming = [e for e in edge_buffers if e.dst_node == nid]
-        # Find outgoing edges for this node
         outgoing = [e for e in edge_buffers if e.src_node == nid]
-
         if node.config.node_type == "gen":
-            ns = f"{nid}_circle"
-
-            # Determine input buffer
-            if incoming and incoming[0].buffer_id == -1:
-                # Reads from hardware input (audio_in)
-                in_buf = "m_pHwInput"
-                in_note = "hw input"
-            elif incoming:
-                in_buf = f"m_pDagBuf_{incoming[0].buffer_id}"
-                in_note = f"buf {incoming[0].buffer_id}"
-            else:
-                in_buf = "nullptr"
-                in_note = "none"
-
-            # Determine output buffer
-            if outgoing:
-                out_buf = f"m_pDagBuf_{outgoing[0].buffer_id}"
-                out_note = f"buf {outgoing[0].buffer_id}"
-            else:
-                out_buf = "nullptr"
-                out_note = "none"
-
-            lines.append(
-                f"        // Node {node.index}: {nid} "
-                f"({n_in}in/{n_out}out, "
-                f"in={in_note}, out={out_note})"
-            )
-
-            # Zero-pad missing input channels
-            if incoming and incoming[0].buffer_id != -1:
-                src_ch = incoming[0].num_channels
-                if src_ch < n_in:
-                    lines.append(
-                        f"        // Zero-pad: source has {src_ch} ch, "
-                        f"node expects {n_in}"
-                    )
-                    for ch in range(src_ch, n_in):
-                        lines.append(
-                            f"        for (unsigned z = 0; z < nFrames; z++) "
-                            f"{in_buf}[{ch}][z] = 0.0f;"
-                        )
-
-            lines.append(f"        {ns}::wrapper_perform(")
-            lines.append(f"            m_genState[{node.index}],")
-            if n_in > 0:
-                lines.append(f"            {in_buf}, {n_in},")
-            else:
-                lines.append("            nullptr, 0,")
-            lines.append(f"            {out_buf}, {n_out},")
-            lines.append("            (long)nFrames);")
-            lines.append("")
-
+            lines.extend(_build_dag_gen_perform_lines(node, incoming, outgoing))
         elif node.config.node_type == "mixer":
-            # Inline weighted sum
-            lines.append(
-                f"        // Node {node.index}: {nid} (mixer, {len(incoming)} inputs)"
+            lines.extend(_build_dag_mixer_perform_lines(node, incoming, outgoing))
+    return "\n".join(lines)
+
+
+def _build_dag_node_midi_dispatch_lines(
+    node: "ResolvedChainNode",
+) -> list[str]:
+    """Build MIDI dispatch lines for a single DAG node."""
+    midi_ch = node.config.midi_channel
+    if midi_ch is None:
+        midi_ch = node.index + 1
+    n_params = node.manifest.num_params
+    lines = [
+        f"    // Node {node.index}: {node.config.id} (MIDI ch {midi_ch})",
+        f"    if (channel == {midi_ch}) {{",
+    ]
+
+    if node.config.cc_map:
+        for cc_num, param_name in sorted(node.config.cc_map.items()):
+            param_idx = None
+            for p in node.manifest.params:
+                if p.name == param_name:
+                    param_idx = p.index
+                    break
+            if param_idx is None:
+                continue
+            if node.config.node_type == "gen":
+                ns = f"{node.config.id}_circle"
+                lines.extend(
+                    [
+                        f"        if (cc == {cc_num}) {{",
+                        f"            float min = {ns}::wrapper_param_min("
+                        f"s_pSoundDevice->m_genState[{node.index}], {param_idx});",
+                        f"            float max = {ns}::wrapper_param_max("
+                        f"s_pSoundDevice->m_genState[{node.index}], {param_idx});",
+                        f"            s_pSoundDevice->SetParam("
+                        f"{node.index}, {param_idx}, "
+                        f"min + normalized * (max - min));",
+                        "        }",
+                    ]
+                )
+            else:
+                p_obj = node.manifest.params[param_idx]
+                lines.extend(
+                    [
+                        f"        if (cc == {cc_num}) {{",
+                        f"            s_pSoundDevice->SetParam("
+                        f"{node.index}, {param_idx}, {p_obj.min}f + normalized * "
+                        f"{p_obj.max - p_obj.min}f);",
+                        "        }",
+                    ]
+                )
+    elif n_params > 0:
+        if node.config.node_type == "gen":
+            lines.extend(
+                [
+                    f"        if (cc < {n_params}) {{",
+                    f"            s_pSoundDevice->SetParam("
+                    f"{node.index}, (int)cc, normalized);",
+                    "        }",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"        if (cc < {n_params}) {{",
+                    f"            s_pSoundDevice->SetParam("
+                    f"{node.index}, (int)cc, normalized * 2.0f);",
+                    "        }",
+                ]
             )
 
-            # Determine output buffer
-            if outgoing:
-                out_buf = f"m_pDagBuf_{outgoing[0].buffer_id}"
-            else:
-                out_buf = "nullptr"
-
-            lines.append(f"        for (int ch = 0; ch < {n_out}; ch++) {{")
-            lines.append("            for (unsigned s = 0; s < nFrames; s++) {")
-
-            # Build weighted sum expression
-            terms = []
-            for edge in incoming:
-                idx = edge.dst_input_index if edge.dst_input_index is not None else 0
-                gain_var = f"m_{nid}_gain_{idx}"
-                if edge.buffer_id == -1:
-                    src_buf = "m_pHwInput"
-                else:
-                    src_buf = f"m_pDagBuf_{edge.buffer_id}"
-                terms.append(f"{src_buf}[ch][s] * {gain_var}")
-
-            if terms:
-                sum_expr = " + ".join(terms)
-                lines.append(f"                {out_buf}[ch][s] = {sum_expr};")
-            else:
-                lines.append(f"                {out_buf}[ch][s] = 0.0f;")
-
-            lines.append("            }")
-            lines.append("        }")
-            lines.append("")
-
-    return "\n".join(lines)
+    lines.append("    }")
+    return lines
 
 
 def _build_dag_midi_dispatch(
     dag_nodes: "list[ResolvedChainNode]",
-    graph: "GraphConfig",
+    _graph: "GraphConfig",
 ) -> str:
     """Build MIDI CC dispatch for DAG nodes (gen~ and mixer)."""
     lines = []
     for node in dag_nodes:
-        midi_ch = node.config.midi_channel
-        if midi_ch is None:
-            midi_ch = node.index + 1
-        n_params = node.manifest.num_params
-
-        lines.append(f"    // Node {node.index}: {node.config.id} (MIDI ch {midi_ch})")
-        lines.append(f"    if (channel == {midi_ch}) {{")
-
-        if node.config.cc_map:
-            # Explicit CC mapping
-            for cc_num, param_name in sorted(node.config.cc_map.items()):
-                param_idx = None
-                for p in node.manifest.params:
-                    if p.name == param_name:
-                        param_idx = p.index
-                        break
-                if param_idx is not None:
-                    if node.config.node_type == "gen":
-                        ns = f"{node.config.id}_circle"
-                        lines.append(f"        if (cc == {cc_num}) {{")
-                        lines.append(
-                            f"            float min = {ns}::wrapper_param_min("
-                            f"s_pSoundDevice->m_genState[{node.index}], "
-                            f"{param_idx});"
-                        )
-                        lines.append(
-                            f"            float max = {ns}::wrapper_param_max("
-                            f"s_pSoundDevice->m_genState[{node.index}], "
-                            f"{param_idx});"
-                        )
-                        lines.append(
-                            f"            s_pSoundDevice->SetParam("
-                            f"{node.index}, {param_idx}, "
-                            f"min + normalized * (max - min));"
-                        )
-                        lines.append("        }")
-                    else:
-                        # Mixer: scale to [min, max]
-                        p_obj = node.manifest.params[param_idx]
-                        lines.append(f"        if (cc == {cc_num}) {{")
-                        lines.append(
-                            f"            s_pSoundDevice->SetParam("
-                            f"{node.index}, {param_idx}, "
-                            f"{p_obj.min}f + normalized * "
-                            f"{p_obj.max - p_obj.min}f);"
-                        )
-                        lines.append("        }")
-        else:
-            # CC-by-param-index
-            if n_params > 0:
-                if node.config.node_type == "gen":
-                    lines.append(f"        if (cc < {n_params}) {{")
-                    lines.append(
-                        f"            s_pSoundDevice->SetParam("
-                        f"{node.index}, (int)cc, normalized);"
-                    )
-                    lines.append("        }")
-                else:
-                    # Mixer: scale normalized to [0, 2]
-                    lines.append(f"        if (cc < {n_params}) {{")
-                    lines.append(
-                        f"            s_pSoundDevice->SetParam("
-                        f"{node.index}, (int)cc, normalized * 2.0f);"
-                    )
-                    lines.append("        }")
-
-        lines.append("    }")
+        lines.extend(_build_dag_node_midi_dispatch_lines(node))
     return "\n".join(lines)
 
 
@@ -919,7 +1041,9 @@ def _build_dag_per_node_flags(dag_nodes: "list[ResolvedChainNode]") -> str:
     for node in dag_nodes:
         if node.config.node_type != "gen":
             continue
-        assert node.export_info is not None
+        if node.export_info is None:
+            msg = f"Node '{node.config.id}' is missing export info"
+            raise ProjectError(msg)
         idx = node.index
         gen_name = node.export_info.name
         node_id = node.config.id
@@ -955,21 +1079,25 @@ class CirclePlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate Circle bare metal project files."""
         templates_dir = get_circle_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Circle templates not found at {templates_dir}")
+            msg = f"Circle templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Resolve board config
         board_key = "pi3-i2s"
         if config is not None and config.board is not None:
             board_key = config.board
         if board_key not in CIRCLE_BOARDS:
-            raise ProjectError(
+            msg = (
                 f"Unknown Circle board '{board_key}'. "
                 f"Valid boards: {', '.join(sorted(CIRCLE_BOARDS))}"
+            )
+            raise ProjectError(
+                msg
             )
         board = CIRCLE_BOARDS[board_key]
 
@@ -1000,9 +1128,11 @@ class CirclePlatform(Platform):
         self._generate_ext_circle(
             templates_dir / template_name,
             output_dir / "gen_ext_circle.cpp",
-            board,
-            manifest.num_inputs,
-            manifest.num_outputs,
+            {
+                "board": board,
+                "num_inputs": manifest.num_inputs,
+                "num_outputs": manifest.num_outputs,
+            },
         )
 
         # Resolve default CIRCLE_DIR for baking into Makefile
@@ -1015,14 +1145,16 @@ class CirclePlatform(Platform):
         self._generate_makefile(
             templates_dir / "Makefile.template",
             output_dir / "Makefile",
-            manifest.gen_name,
-            lib_name,
-            manifest.num_inputs,
-            manifest.num_outputs,
-            manifest.num_params,
-            default_circle_dir,
-            board,
-            remap_defines=remap_defines,
+            {
+                "gen_name": manifest.gen_name,
+                "lib_name": lib_name,
+                "num_inputs": manifest.num_inputs,
+                "num_outputs": manifest.num_outputs,
+                "num_params": manifest.num_params,
+                "default_circle_dir": default_circle_dir,
+                "board": board,
+                "remap_defines": remap_defines,
+            },
         )
 
         # Generate gen_buffer.h using base class method
@@ -1037,41 +1169,33 @@ class CirclePlatform(Platform):
         self._generate_config_txt(
             templates_dir / "config.txt.template",
             output_dir / "config.txt",
-            board,
+            {"board": board},
         )
 
     def _generate_makefile(
         self,
         template_path: Path,
         output_path: Path,
-        gen_name: str,
-        lib_name: str,
-        num_inputs: int,
-        num_outputs: int,
-        num_params: int,
-        default_circle_dir: str,
-        board: CircleBoardConfig,
-        remap_defines: str = "",
+        substitutions: dict[str, object],
     ) -> None:
         """Generate Makefile from template."""
         if not template_path.exists():
-            raise ProjectError(f"Makefile template not found at {template_path}")
+            msg = f"Makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
+        board = _require_circle_board(substitutions["board"])
+        extra_libs = _get_extra_libs(board.audio_device)
+        if extra_libs:
+            extra_libs = f"$$(CIRCLEHOME)/lib/usb/{extra_libs}"
         content = template.safe_substitute(
-            gen_name=gen_name,
-            lib_name=lib_name,
             genext_version=self.GENEXT_VERSION,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
-            num_params=num_params,
-            default_circle_dir=default_circle_dir,
             rasppi=board.rasppi,
             aarch=board.aarch,
             prefix=board.prefix,
-            extra_libs=_get_extra_libs(board.audio_device),
-            remap_defines=remap_defines,
+            extra_libs=extra_libs,
+            **substitutions,
         )
         output_path.write_text(content, encoding="utf-8")
 
@@ -1079,28 +1203,26 @@ class CirclePlatform(Platform):
         self,
         template_path: Path,
         output_path: Path,
-        board: CircleBoardConfig,
-        num_inputs: int,
-        num_outputs: int,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate gen_ext_circle.cpp from template with board-specific values."""
         if not template_path.exists():
+            msg = f"gen_ext_circle.cpp template not found at {template_path}"
             raise ProjectError(
-                f"gen_ext_circle.cpp template not found at {template_path}"
+                msg
             )
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
-
+        board = _require_circle_board(substitutions["board"])
         content = template.safe_substitute(
             board_key=board.key,
             rasppi=board.rasppi,
             kernel_img=board.kernel_img,
-            num_inputs=num_inputs,
-            num_outputs=num_outputs,
             audio_include=_get_audio_include(board.audio_device),
             audio_base_class=_get_audio_base_class(board.audio_device),
             audio_label=_get_audio_label(board.audio_device),
+            **substitutions,
         )
         output_path.write_text(content, encoding="utf-8")
 
@@ -1108,33 +1230,39 @@ class CirclePlatform(Platform):
         self,
         template_path: Path,
         output_path: Path,
-        board: CircleBoardConfig,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate config.txt for Raspberry Pi boot partition."""
         if not template_path.exists():
-            raise ProjectError(f"config.txt template not found at {template_path}")
+            msg = f"config.txt template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
+        board = _require_circle_board(substitutions["board"])
         content = template.safe_substitute(
             rasppi=board.rasppi,
             audio_boot_config=_get_boot_config(board.audio_device),
+            **substitutions,
         )
         output_path.write_text(content, encoding="utf-8")
 
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
-        """Build Circle firmware using make.
+        """
+        Build Circle firmware using make.
 
         Automatically clones and builds Circle if not already cached.
         """
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         # Ensure Circle is available (clones and builds if needed)
         circle_dir = _resolve_circle_dir()
@@ -1167,7 +1295,7 @@ class CirclePlatform(Platform):
         if (circle_dir / "Rules.mk").is_file():
             self.run_command(["make", "clean", f"CIRCLEHOME={circle_dir}"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
+    def find_output(self, project_dir: Path) -> Path | None:
         """Find the built Circle kernel image."""
         for candidate in project_dir.glob("kernel*.img"):
             return candidate
@@ -1183,9 +1311,10 @@ class CirclePlatform(Platform):
         graph: "GraphConfig",
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
-        """Generate Circle chain project with multiple gen~ plugins.
+        """
+        Generate Circle chain project with multiple gen~ plugins.
 
         Args:
             chain: List of ResolvedChainNode (from graph.resolve_chain).
@@ -1193,20 +1322,24 @@ class CirclePlatform(Platform):
             output_dir: Output directory.
             lib_name: Project name.
             config: Optional project config (for board selection).
-        """
 
+        """
         templates_dir = get_circle_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Circle templates not found at {templates_dir}")
+            msg = f"Circle templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Resolve board config
         board_key = "pi3-i2s"
         if config is not None and config.board is not None:
             board_key = config.board
         if board_key not in CIRCLE_BOARDS:
-            raise ProjectError(
+            msg = (
                 f"Unknown Circle board '{board_key}'. "
                 f"Valid boards: {', '.join(sorted(CIRCLE_BOARDS))}"
+            )
+            raise ProjectError(
+                msg
             )
         board = CIRCLE_BOARDS[board_key]
 
@@ -1243,20 +1376,35 @@ class CirclePlatform(Platform):
 
         # Generate chain kernel (gen_ext_circle.cpp)
         self._generate_chain_kernel(
-            templates_dir, output_dir, chain, graph, board, max_channels, lib_name
+            templates_dir,
+            output_dir,
+            chain,
+            {
+                "graph": graph,
+                "board": board,
+                "max_channels": max_channels,
+                "lib_name": lib_name,
+            },
         )
 
         # Generate chain Makefile
         default_circle_dir = str(_get_default_circle_dir())
         self._generate_chain_makefile(
-            templates_dir, output_dir, chain, lib_name, default_circle_dir, board
+            templates_dir,
+            output_dir,
+            chain,
+            {
+                "lib_name": lib_name,
+                "default_circle_dir": default_circle_dir,
+                "board": board,
+            },
         )
 
         # Generate config.txt
         self._generate_config_txt(
             templates_dir / "config.txt.template",
             output_dir / "config.txt",
-            board,
+            {"board": board},
         )
 
     def _generate_per_node_wrappers(
@@ -1264,13 +1412,16 @@ class CirclePlatform(Platform):
         chain: "list[ResolvedChainNode]",
         output_dir: Path,
     ) -> None:
-        """Generate thin _ext_circle_N.cpp/h shims for each chain node.
+        """
+        Generate thin _ext_circle_N.cpp/h shims for each chain node.
 
         Each shim defines macros (CIRCLE_EXT_NAME, GEN_EXPORTED_NAME, etc.)
         then #includes the shared _ext_circle_impl.cpp/h.
         """
         for node in chain:
-            assert node.export_info is not None
+            if node.export_info is None:
+                msg = f"Node '{node.config.id}' is missing export info"
+                raise ProjectError(msg)
             idx = node.index
             node_id = node.config.id
             gen_name = node.export_info.name
@@ -1314,12 +1465,10 @@ class CirclePlatform(Platform):
         templates_dir: Path,
         output_dir: Path,
         chain: "list[ResolvedChainNode]",
-        graph: "GraphConfig",
-        board: CircleBoardConfig,
-        max_channels: int,
-        lib_name: str,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate gen_ext_circle.cpp from chain template."""
+        board = _require_circle_board(substitutions["board"])
         if board.audio_device == "usb":
             template_name = "gen_ext_circle_chain_usb.cpp.template"
         else:
@@ -1327,7 +1476,8 @@ class CirclePlatform(Platform):
 
         template_path = templates_dir / template_name
         if not template_path.exists():
-            raise ProjectError(f"Chain template not found at {template_path}")
+            msg = f"Chain template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -1335,17 +1485,14 @@ class CirclePlatform(Platform):
         last_node = chain[-1]
         # Determine which scratch buffer holds the final output
         # Even-indexed nodes write to B, odd-indexed nodes write to A
-        if (len(chain) - 1) % 2 == 0:
-            final_output_ptr = "m_pScratchB"
-        else:
-            final_output_ptr = "m_pScratchA"
+        final_output_ptr = "m_pScratchB" if (len(chain) - 1) % 2 == 0 else "m_pScratchA"
 
         content = template.safe_substitute(
             board_key=board.key,
             rasppi=board.rasppi,
             kernel_img=board.kernel_img,
             num_nodes=len(chain),
-            max_channels=max_channels,
+            max_channels=substitutions["max_channels"],
             audio_include=_get_audio_include(board.audio_device),
             audio_base_class=_get_audio_base_class(board.audio_device),
             audio_label=_get_audio_label(board.audio_device),
@@ -1354,10 +1501,16 @@ class CirclePlatform(Platform):
             chain_create_calls=_build_chain_create(chain),
             chain_destroy_calls=_build_chain_destroy(chain),
             chain_set_param_calls=_build_chain_set_param(chain),
-            chain_perform_block=_build_chain_perform(chain, max_channels),
-            chain_midi_dispatch=_build_chain_midi_dispatch(chain, graph),
+            chain_perform_block=_build_chain_perform(
+                chain,
+                substitutions["max_channels"],
+            ),
+            chain_midi_dispatch=_build_chain_midi_dispatch(
+                chain, substitutions["graph"]
+            ),
             chain_last_num_outputs=last_node.manifest.num_outputs,
             chain_final_output_ptr=final_output_ptr,
+            lib_name=substitutions["lib_name"],
         )
         (output_dir / "gen_ext_circle.cpp").write_text(content, encoding="utf-8")
 
@@ -1366,14 +1519,13 @@ class CirclePlatform(Platform):
         templates_dir: Path,
         output_dir: Path,
         chain: "list[ResolvedChainNode]",
-        lib_name: str,
-        default_circle_dir: str,
-        board: CircleBoardConfig,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate Makefile from chain template."""
         template_path = templates_dir / "Makefile_chain.template"
         if not template_path.exists():
-            raise ProjectError(f"Chain Makefile template not found at {template_path}")
+            msg = f"Chain Makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -1383,13 +1535,14 @@ class CirclePlatform(Platform):
 
         # Extra libs: for chain mode, USB is always linked (for MIDI).
         # But if audio is also USB, we don't duplicate.
-        extra_libs = _get_extra_libs(board.audio_device)
+        board = _require_circle_board(substitutions["board"])
+        extra_libs = ""
 
         content = template.safe_substitute(
-            lib_name=lib_name,
+            lib_name=substitutions["lib_name"],
             genext_version=self.GENEXT_VERSION,
             num_nodes=len(chain),
-            default_circle_dir=default_circle_dir,
+            default_circle_dir=substitutions["default_circle_dir"],
             rasppi=board.rasppi,
             aarch=board.aarch,
             prefix=board.prefix,
@@ -1405,39 +1558,48 @@ class CirclePlatform(Platform):
 
     def generate_dag_project(
         self,
-        dag_nodes: "list[ResolvedChainNode]",
-        graph: "GraphConfig",
-        edge_buffers: "list[EdgeBuffer]",
-        num_buffers: int,
-        output_dir: Path,
-        lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        dag: DagProjectContext | list[ResolvedChainNode],
+        *args: object,
+        config: ProjectConfig | None = None,
     ) -> None:
-        """Generate Circle DAG project with arbitrary topology.
+        """
+        Generate Circle DAG project with arbitrary topology.
 
         Args:
-            dag_nodes: List of ResolvedChainNode in topological order.
-            graph: The original GraphConfig.
-            edge_buffers: Buffer allocations from allocate_edge_buffers().
-            num_buffers: Total number of allocated intermediate buffers.
+            dag: DAG generation context.
+            *args: Legacy positional arguments for backward compatibility.
             output_dir: Output directory.
             lib_name: Project name.
             config: Optional project config (for board selection).
+
         """
+        dag_ctx, output_dir, lib_name, config = _resolve_dag_project_args(
+            dag, args, config
+        )
+
         templates_dir = get_circle_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Circle templates not found at {templates_dir}")
+            msg = f"Circle templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Resolve board config
         board_key = "pi3-i2s"
         if config is not None and config.board is not None:
             board_key = config.board
         if board_key not in CIRCLE_BOARDS:
-            raise ProjectError(
+            msg = (
                 f"Unknown Circle board '{board_key}'. "
                 f"Valid boards: {', '.join(sorted(CIRCLE_BOARDS))}"
             )
+            raise ProjectError(
+                msg
+            )
         board = CIRCLE_BOARDS[board_key]
+
+        dag_nodes = dag_ctx.dag_nodes
+        graph = dag_ctx.graph
+        edge_buffers = dag_ctx.edge_buffers
+        num_buffers = dag_ctx.num_buffers
 
         # Copy static template files (same as chain)
         static_files = [
@@ -1476,12 +1638,14 @@ class CirclePlatform(Platform):
             templates_dir,
             output_dir,
             dag_nodes,
-            graph,
-            edge_buffers,
-            num_buffers,
-            board,
-            max_channels,
-            lib_name,
+            {
+                "graph": graph,
+                "edge_buffers": edge_buffers,
+                "num_buffers": num_buffers,
+                "board": board,
+                "max_channels": max_channels,
+                "lib_name": lib_name,
+            },
         )
 
         # Generate DAG Makefile (reuses chain Makefile template)
@@ -1490,16 +1654,18 @@ class CirclePlatform(Platform):
             templates_dir,
             output_dir,
             dag_nodes,
-            lib_name,
-            default_circle_dir,
-            board,
+            {
+                "lib_name": lib_name,
+                "default_circle_dir": default_circle_dir,
+                "board": board,
+            },
         )
 
         # Generate config.txt
         self._generate_config_txt(
             templates_dir / "config.txt.template",
             output_dir / "config.txt",
-            board,
+            {"board": board},
         )
 
     def _generate_dag_kernel(
@@ -1507,14 +1673,10 @@ class CirclePlatform(Platform):
         templates_dir: Path,
         output_dir: Path,
         dag_nodes: "list[ResolvedChainNode]",
-        graph: "GraphConfig",
-        edge_buffers: "list[EdgeBuffer]",
-        num_buffers: int,
-        board: CircleBoardConfig,
-        max_channels: int,
-        lib_name: str,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate gen_ext_circle.cpp from DAG template."""
+        board = _require_circle_board(substitutions["board"])
         if board.audio_device == "usb":
             template_name = "gen_ext_circle_dag_usb.cpp.template"
         else:
@@ -1522,12 +1684,16 @@ class CirclePlatform(Platform):
 
         template_path = templates_dir / template_name
         if not template_path.exists():
-            raise ProjectError(f"DAG template not found at {template_path}")
+            msg = f"DAG template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
 
         # Find the last node that feeds audio_out
+        graph = substitutions["graph"]
+        edge_buffers = substitutions["edge_buffers"]
+        num_buffers = substitutions["num_buffers"]
         last_node = dag_nodes[-1]
         for c in graph.connections:
             if c.dst_node == "audio_out":
@@ -1548,9 +1714,12 @@ class CirclePlatform(Platform):
 
         # Build clear-buffers code
         clear_lines = []
+        max_channels = substitutions["max_channels"]
         for i in range(num_buffers):
-            for ch in range(max_channels):
-                clear_lines.append(f"            m_DagBufStorage_{i}[{ch}][i] = 0.0f;")
+            clear_lines.extend(
+                f"            m_DagBufStorage_{i}[{ch}][i] = 0.0f;"
+                for ch in range(max_channels)
+            )
         dag_clear_buffers = "\n".join(clear_lines)
 
         content = template.safe_substitute(
@@ -1564,19 +1733,25 @@ class CirclePlatform(Platform):
             audio_label=_get_audio_label(board.audio_device),
             dag_includes=_build_dag_includes(dag_nodes),
             dag_io_defines=_build_dag_io_defines(dag_nodes),
-            dag_buffer_decls=_build_dag_buffer_decls(num_buffers, max_channels),
+            dag_buffer_decls=_build_dag_buffer_decls(
+                num_buffers, substitutions["max_channels"]
+            ),
             dag_buffer_init=_build_dag_buffer_init(num_buffers),
             dag_mixer_gain_decls=_build_dag_mixer_gain_decls(dag_nodes),
             dag_create_calls=_build_dag_create(dag_nodes),
             dag_destroy_calls=_build_dag_destroy(dag_nodes),
             dag_set_param_calls=_build_dag_set_param(dag_nodes),
             dag_perform_block=_build_dag_perform(
-                dag_nodes, edge_buffers, graph, max_channels
+                dag_nodes,
+                edge_buffers,
+                graph,
+                substitutions["max_channels"],
             ),
             dag_clear_buffers=dag_clear_buffers,
             dag_midi_dispatch=_build_dag_midi_dispatch(dag_nodes, graph),
             dag_last_num_outputs=last_node.manifest.num_outputs,
             dag_final_output_ptr=final_output_ptr,
+            lib_name=substitutions["lib_name"],
         )
         (output_dir / "gen_ext_circle.cpp").write_text(content, encoding="utf-8")
 
@@ -1585,14 +1760,13 @@ class CirclePlatform(Platform):
         templates_dir: Path,
         output_dir: Path,
         dag_nodes: "list[ResolvedChainNode]",
-        lib_name: str,
-        default_circle_dir: str,
-        board: CircleBoardConfig,
+        substitutions: dict[str, object],
     ) -> None:
         """Generate Makefile for DAG project (reuses chain Makefile template)."""
         template_path = templates_dir / "Makefile_chain.template"
         if not template_path.exists():
-            raise ProjectError(f"Chain Makefile template not found at {template_path}")
+            msg = f"Chain Makefile template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -1601,13 +1775,14 @@ class CirclePlatform(Platform):
         gen_nodes = [n for n in dag_nodes if n.config.node_type == "gen"]
         ext_objs = " ".join(f"_ext_circle_{n.index}.o" for n in gen_nodes)
 
+        board = _require_circle_board(substitutions["board"])
         extra_libs = _get_extra_libs(board.audio_device)
 
         content = template.safe_substitute(
-            lib_name=lib_name,
+            lib_name=substitutions["lib_name"],
             genext_version=self.GENEXT_VERSION,
             num_nodes=len(dag_nodes),
-            default_circle_dir=default_circle_dir,
+            default_circle_dir=substitutions["default_circle_dir"],
             rasppi=board.rasppi,
             aarch=board.aarch,
             prefix=board.prefix,

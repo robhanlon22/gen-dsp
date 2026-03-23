@@ -1,5 +1,6 @@
 """Tests for Csound opcode plugin platform implementation."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -7,13 +8,25 @@ from pathlib import Path
 import pytest
 
 from gen_dsp.core.parser import GenExportParser
-from gen_dsp.core.project import ProjectGenerator, ProjectConfig
-from gen_dsp.platforms import (
-    PLATFORM_REGISTRY,
-    CsoundPlatform,
-    get_platform,
-)
+from gen_dsp.core.project import ProjectConfig, ProjectGenerator
+from gen_dsp.platforms import PLATFORM_REGISTRY, CsoundPlatform, get_platform
 from gen_dsp.platforms.csound import _build_type_strings
+
+NUM_0 = 0
+NUM_1 = 1
+
+
+def _resolve_executable(name: str) -> str:
+    """Return the absolute path for an executable."""
+    path = shutil.which(name)
+    if path is None:
+        message = f"{name} not found"
+        raise RuntimeError(message)
+    return path
+
+
+_SUBPROCESS_RUN = subprocess.run
+
 
 # Skip integration tests if csound headers / compiler not available
 _has_cxx = shutil.which("c++") is not None or shutil.which("g++") is not None
@@ -38,28 +51,32 @@ _skip_no_validation = pytest.mark.skipif(
 class TestBuildTypeStrings:
     """Test OENTRY type string generation."""
 
-    def test_stereo_effect_no_params(self):
+    def test_stereo_effect_no_params(self) -> object:
+        """Test test stereo effect no params."""
         out, inp = _build_type_strings(2, 2, 0)
         assert out == "aa"
         assert inp == "aa"
 
-    def test_stereo_effect_with_params(self):
+    def test_stereo_effect_with_params(self) -> object:
+        """Test test stereo effect with params."""
         out, inp = _build_type_strings(2, 2, 4)
         assert out == "aa"
         assert inp == "aakkkk"
 
-    def test_generator_with_params(self):
+    def test_generator_with_params(self) -> object:
+        """Test test generator with params."""
         out, inp = _build_type_strings(0, 1, 3)
         assert out == "a"
         assert inp == "kkk"
 
-    def test_mono_effect_one_param(self):
+    def test_mono_effect_one_param(self) -> object:
+        """Test test mono effect one param."""
         out, inp = _build_type_strings(1, 1, 1)
         assert out == "a"
         assert inp == "ak"
 
-    def test_three_in_two_out(self):
-        """spectraldelayfb-like: 3in/2out, no params."""
+    def test_three_in_two_out(self) -> object:
+        """Test test three in two out."""
         out, inp = _build_type_strings(3, 2, 0)
         assert out == "aa"
         assert inp == "aaa"
@@ -68,20 +85,24 @@ class TestBuildTypeStrings:
 class TestCsoundPlatform:
     """Test Csound platform registry and basic properties."""
 
-    def test_registry_contains_csound(self):
+    def test_registry_contains_csound(self) -> object:
+        """Test test registry contains csound."""
         assert "csound" in PLATFORM_REGISTRY
         assert PLATFORM_REGISTRY["csound"] == CsoundPlatform
 
-    def test_get_platform_csound(self):
+    def test_get_platform_csound(self) -> object:
+        """Test test get platform csound."""
         platform = get_platform("csound")
         assert isinstance(platform, CsoundPlatform)
         assert platform.name == "csound"
 
-    def test_csound_extension(self):
+    def test_csound_extension(self) -> object:
+        """Test test csound extension."""
         platform = CsoundPlatform()
         assert platform.extension in (".dylib", ".so")
 
-    def test_csound_build_instructions(self):
+    def test_csound_build_instructions(self) -> object:
+        """Test test csound build instructions."""
         platform = CsoundPlatform()
         instructions = platform.get_build_instructions()
         assert isinstance(instructions, list)
@@ -91,7 +112,9 @@ class TestCsoundPlatform:
 class TestCsoundProjectGeneration:
     """Test Csound opcode project generation."""
 
-    def test_generate_project_gigaverb(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_project_gigaverb(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test generating Csound opcode from gigaverb (stereo, 8 params)."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -118,7 +141,7 @@ class TestCsoundProjectGeneration:
 
     def test_generate_project_with_buffers(
         self, rampleplayer_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test generating Csound opcode with buffers."""
         parser = GenExportParser(rampleplayer_export)
         export_info = parser.parse()
@@ -135,8 +158,8 @@ class TestCsoundProjectGeneration:
         assert "WRAPPER_BUFFER_COUNT 1" in buffer_h
         assert "WRAPPER_BUFFER_NAME_0 sample" in buffer_h
 
-    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path):
-        """Test that Makefile has correct content."""
+    def test_makefile_content(self, gigaverb_export: Path, tmp_project: Path) -> object:
+        """Test test makefile content."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -158,8 +181,12 @@ class TestCsoundProjectGeneration:
 
     def test_makefile_type_strings_gigaverb(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
-        """Test that Makefile has correct type strings for gigaverb (2in/2out/8params)."""
+    ) -> object:
+        """
+        Test that Makefile has correct type strings for gigaverb.
+
+        Covers the 2in/2out/8params case.
+        """
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
 
@@ -174,7 +201,7 @@ class TestCsoundProjectGeneration:
 
     def test_makefile_type_strings_spectraldelayfb(
         self, spectraldelayfb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test type strings for spectraldelayfb (3in/2out/0params)."""
         parser = GenExportParser(spectraldelayfb_export)
         export_info = parser.parse()
@@ -187,7 +214,9 @@ class TestCsoundProjectGeneration:
         assert 'CSOUND_OUTYPES=\\"aa\\"' in makefile
         assert 'CSOUND_INTYPES=\\"aaa\\"' in makefile
 
-    def test_gen_ext_csound_cpp_content(self, gigaverb_export: Path, tmp_project: Path):
+    def test_gen_ext_csound_cpp_content(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test that gen_ext_csound.cpp has correct content."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -205,7 +234,9 @@ class TestCsoundProjectGeneration:
         assert "wrapper_create" in content
         assert "wrapper_perform" in content
 
-    def test_generate_copies_gen_export(self, gigaverb_export: Path, tmp_project: Path):
+    def test_generate_copies_gen_export(
+        self, gigaverb_export: Path, tmp_project: Path
+    ) -> object:
         """Test that gen~ export is copied to project."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -223,7 +254,7 @@ class TestCsoundProjectGeneration:
 
     def test_ext_header_uses_shared_template(
         self, gigaverb_export: Path, tmp_project: Path
-    ):
+    ) -> object:
         """Test that _ext_csound.h is generated from shared template."""
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -240,13 +271,14 @@ class TestCsoundProjectGeneration:
 
 
 class TestCsoundBuildIntegration:
-    """Integration tests that generate and compile Csound opcode plugins.
+    """
+    Integration tests that generate and compile Csound opcode plugins.
 
     Skipped when c++, make, or Csound headers are not available.
     """
 
     @_skip_no_build
-    def test_build_gigaverb(self, gigaverb_export: Path, tmp_path: Path):
+    def test_build_gigaverb(self, gigaverb_export: Path, tmp_path: Path) -> object:
         """Generate and compile gigaverb Csound opcode."""
         project_dir = tmp_path / "gigaverb_csound"
         parser = GenExportParser(gigaverb_export)
@@ -256,24 +288,28 @@ class TestCsoundBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make all failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         # Verify shared library was produced
         libs = list(project_dir.glob("lib*.*"))
-        assert len(libs) == 1
-        assert libs[0].stat().st_size > 0
+        assert len(libs) == NUM_1
+        assert libs[NUM_0].stat().st_size > NUM_0
 
     @_skip_no_build
-    def test_build_spectraldelayfb(self, spectraldelayfb_export: Path, tmp_path: Path):
+    def test_build_spectraldelayfb(
+        self, spectraldelayfb_export: Path, tmp_path: Path
+    ) -> object:
         """Generate and compile spectraldelayfb (3in/2out) Csound opcode."""
         project_dir = tmp_path / "spectraldelayfb_csound"
         parser = GenExportParser(spectraldelayfb_export)
@@ -283,24 +319,26 @@ class TestCsoundBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert result.returncode == 0, (
+        assert result.returncode == NUM_0, (
             f"make all failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
         libs = list(project_dir.glob("lib*.*"))
-        assert len(libs) == 1
-        assert libs[0].stat().st_size > 0
+        assert len(libs) == NUM_1
+        assert libs[NUM_0].stat().st_size > NUM_0
 
     @_skip_no_validation
-    def test_validate_gigaverb(self, gigaverb_export: Path, tmp_path: Path):
-        """Build gigaverb and validate with csound --opcode-list."""
+    def test_validate_gigaverb(self, gigaverb_export: Path, tmp_path: Path) -> object:
+        """Generate and validate gigaverb Csound opcode."""
         project_dir = tmp_path / "gigaverb_validate"
         parser = GenExportParser(gigaverb_export)
         export_info = parser.parse()
@@ -309,23 +347,26 @@ class TestCsoundBuildIntegration:
         generator = ProjectGenerator(export_info, config)
         generator.generate(project_dir)
 
-        build_result = subprocess.run(
-            ["make", "all"],
+        make = _resolve_executable("make")
+        build_result = _SUBPROCESS_RUN(
+            [make, "all"],
+            check=False,
             cwd=project_dir,
             capture_output=True,
             text=True,
             timeout=120,
         )
-        assert build_result.returncode == 0
+        assert build_result.returncode == NUM_0
 
         # Point Csound at the plugin directory and list opcodes
-        import os
 
         env = os.environ.copy()
         env["OPCODE6DIR64"] = str(project_dir)
 
-        result = subprocess.run(
-            ["csound", "--list-opcodes"],
+        csound = _resolve_executable("csound")
+        result = _SUBPROCESS_RUN(
+            [csound, "--list-opcodes"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=10,

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from gen_dsp.graph._deps import is_feedback_edge
 from gen_dsp.graph.models import (
-    SVF,
     ADSR,
+    SVF,
     Accum,
     Allpass,
     BinOp,
@@ -23,11 +23,11 @@ from gen_dsp.graph.models import (
     Compare,
     Constant,
     Counter,
+    Cycle,
     DCBlock,
     DelayLine,
     DelayRead,
     DelayWrite,
-    Cycle,
     Delta,
     Elapsed,
     Fold,
@@ -55,8 +55,8 @@ from gen_dsp.graph.models import (
     Selector,
     SinOsc,
     Slide,
-    Smoothstep,
     SmoothParam,
+    Smoothstep,
     Splat,
     Subgraph,
     TriOsc,
@@ -65,120 +65,164 @@ from gen_dsp.graph.models import (
     Wrap,
 )
 
+try:
+    import graphviz
+except ModuleNotFoundError:
+    graphviz = None
+
+
+def _box(label: str, color: str = "#fde0c8") -> tuple[str, str, str]:
+    return "box", color, label
+
+
+def _diamond(label: str) -> tuple[str, str, str]:
+    return "diamond", "#fff3cd", label
+
+
+def _box3d(label: str, color: str = "#fde0c8") -> tuple[str, str, str]:
+    return "box3d", color, label
+
+
+_NODE_ATTR_BUILDERS = {
+    BinOp: lambda node: _box(f"{node.id}\\n{node.op}", "#fff3cd"),
+    UnaryOp: lambda node: _box(f"{node.id}\\n{node.op}", "#fff3cd"),
+    Clamp: lambda node: _box(f"{node.id}\\nclamp", "#fff3cd"),
+    Constant: lambda node: _box(f"{node.id}\\n{node.value}", "#e9ecef"),
+    History: lambda node: _box(f"{node.id}\\nz^-1"),
+    DelayLine: lambda node: _box3d(f"{node.id}\\ndelay[{node.max_samples}]"),
+    DelayRead: lambda node: _box(f"{node.id}\\nread"),
+    DelayWrite: lambda node: _box(f"{node.id}\\nwrite"),
+    Phasor: lambda node: _box(f"{node.id}\\nphasor", "#e2d5f1"),
+    Noise: lambda node: _box(f"{node.id}\\nnoise", "#e2d5f1"),
+    Compare: lambda node: _diamond(f"{node.id}\\n{node.op}"),
+    Select: lambda node: _diamond(f"{node.id}\\nselect"),
+    Wrap: lambda node: _box(f"{node.id}\\nwrap", "#fff3cd"),
+    Fold: lambda node: _box(f"{node.id}\\nfold", "#fff3cd"),
+    Mix: lambda node: _box(f"{node.id}\\nmix", "#fff3cd"),
+    Delta: lambda node: _box(f"{node.id}\\ndelta"),
+    Change: lambda node: _box(f"{node.id}\\nchange"),
+    Biquad: lambda node: _box(f"{node.id}\\nbiquad"),
+    SVF: lambda node: _box(f"{node.id}\\nsvf({node.mode})"),
+    OnePole: lambda node: _box(f"{node.id}\\nonepole"),
+    DCBlock: lambda node: _box(f"{node.id}\\ndcblock"),
+    Allpass: lambda node: _box(f"{node.id}\\nallpass"),
+    SinOsc: lambda node: _box(f"{node.id}\\nsinosc", "#e2d5f1"),
+    TriOsc: lambda node: _box(f"{node.id}\\ntriosc", "#e2d5f1"),
+    SawOsc: lambda node: _box(f"{node.id}\\nsawosc", "#e2d5f1"),
+    PulseOsc: lambda node: _box(f"{node.id}\\npulseosc", "#e2d5f1"),
+    SampleHold: lambda node: _box(f"{node.id}\\nsample_hold"),
+    Latch: lambda node: _box(f"{node.id}\\nlatch"),
+    Accum: lambda node: _box(f"{node.id}\\naccum"),
+    Counter: lambda node: _box(f"{node.id}\\ncounter"),
+    Buffer: lambda node: _box3d(f"{node.id}\\nbuffer[{node.size}]"),
+    BufRead: lambda node: _box(f"{node.id}\\nbuf_read"),
+    BufWrite: lambda node: _box(f"{node.id}\\nbuf_write"),
+    Splat: lambda node: _box(f"{node.id}\\nsplat"),
+    BufSize: lambda node: _box(f"{node.id}\\nbuf_size"),
+    Cycle: lambda node: _box(f"{node.id}\\ncycle"),
+    Wave: lambda node: _box(f"{node.id}\\nwave"),
+    Lookup: lambda node: _box(f"{node.id}\\nlookup"),
+    Elapsed: lambda node: _box(f"{node.id}\\nelapsed"),
+    MulAccum: lambda node: _box(f"{node.id}\\nmulaccum"),
+    RateDiv: lambda node: _box(f"{node.id}\\nrate_div"),
+    Scale: lambda node: _box(f"{node.id}\\nscale", "#fff3cd"),
+    SmoothParam: lambda node: _box(f"{node.id}\\nsmooth"),
+    Slide: lambda node: _box(f"{node.id}\\nslide"),
+    ADSR: lambda node: _box(f"{node.id}\\nadsr"),
+    Peek: lambda node: _box(f"{node.id}\\npeek", "#d4edda"),
+    Pass: lambda node: _box(f"{node.id}\\npass", "#fff3cd"),
+    NamedConstant: lambda node: _box(f"{node.id}\\n{node.op}", "#e9ecef"),
+    SampleRate: lambda node: _box(f"{node.id}\\nsamplerate", "#e9ecef"),
+    Smoothstep: lambda node: _box(f"{node.id}\\nsmoothstep", "#fff3cd"),
+    GateRoute: lambda node: _box(f"{node.id}\\ngate {node.count}", "#fff3cd"),
+    GateOut: lambda node: _box(f"{node.id}\\ngate_out {node.channel}", "#fff3cd"),
+    Selector: lambda node: _box(f"{node.id}\\nselector", "#fff3cd"),
+    Subgraph: lambda node: _box3d(
+        (
+            f"{node.id}\\nsubgraph "
+            f"({len(node.graph.inputs)}in/{len(node.graph.outputs)}out)"
+        ),
+        "#cce5ff",
+    ),
+}
+
 
 def _node_attrs(node: object) -> tuple[str, str, str]:
     """Return (shape, fillcolor, label) for a graph node."""
-    if isinstance(node, BinOp):
-        return "box", "#fff3cd", f"{node.id}\\n{node.op}"
-    if isinstance(node, UnaryOp):
-        return "box", "#fff3cd", f"{node.id}\\n{node.op}"
-    if isinstance(node, Clamp):
-        return "box", "#fff3cd", f"{node.id}\\nclamp"
-    if isinstance(node, Constant):
-        return "box", "#e9ecef", f"{node.id}\\n{node.value}"
-    if isinstance(node, History):
-        return "box", "#fde0c8", f"{node.id}\\nz^-1"
-    if isinstance(node, DelayLine):
-        return "box3d", "#fde0c8", f"{node.id}\\ndelay[{node.max_samples}]"
-    if isinstance(node, DelayRead):
-        return "box", "#fde0c8", f"{node.id}\\nread"
-    if isinstance(node, DelayWrite):
-        return "box", "#fde0c8", f"{node.id}\\nwrite"
-    if isinstance(node, Phasor):
-        return "box", "#e2d5f1", f"{node.id}\\nphasor"
-    if isinstance(node, Noise):
-        return "box", "#e2d5f1", f"{node.id}\\nnoise"
-    if isinstance(node, Compare):
-        return "diamond", "#fff3cd", f"{node.id}\\n{node.op}"
-    if isinstance(node, Select):
-        return "diamond", "#fff3cd", f"{node.id}\\nselect"
-    if isinstance(node, Wrap):
-        return "box", "#fff3cd", f"{node.id}\\nwrap"
-    if isinstance(node, Fold):
-        return "box", "#fff3cd", f"{node.id}\\nfold"
-    if isinstance(node, Mix):
-        return "box", "#fff3cd", f"{node.id}\\nmix"
-    if isinstance(node, Delta):
-        return "box", "#fde0c8", f"{node.id}\\ndelta"
-    if isinstance(node, Change):
-        return "box", "#fde0c8", f"{node.id}\\nchange"
-    if isinstance(node, Biquad):
-        return "box", "#fde0c8", f"{node.id}\\nbiquad"
-    if isinstance(node, SVF):
-        return "box", "#fde0c8", f"{node.id}\\nsvf({node.mode})"
-    if isinstance(node, OnePole):
-        return "box", "#fde0c8", f"{node.id}\\nonepole"
-    if isinstance(node, DCBlock):
-        return "box", "#fde0c8", f"{node.id}\\ndcblock"
-    if isinstance(node, Allpass):
-        return "box", "#fde0c8", f"{node.id}\\nallpass"
-    if isinstance(node, SinOsc):
-        return "box", "#e2d5f1", f"{node.id}\\nsinosc"
-    if isinstance(node, TriOsc):
-        return "box", "#e2d5f1", f"{node.id}\\ntriosc"
-    if isinstance(node, SawOsc):
-        return "box", "#e2d5f1", f"{node.id}\\nsawosc"
-    if isinstance(node, PulseOsc):
-        return "box", "#e2d5f1", f"{node.id}\\npulseosc"
-    if isinstance(node, SampleHold):
-        return "box", "#fde0c8", f"{node.id}\\nsample_hold"
-    if isinstance(node, Latch):
-        return "box", "#fde0c8", f"{node.id}\\nlatch"
-    if isinstance(node, Accum):
-        return "box", "#fde0c8", f"{node.id}\\naccum"
-    if isinstance(node, Counter):
-        return "box", "#fde0c8", f"{node.id}\\ncounter"
-    if isinstance(node, Buffer):
-        return "box3d", "#fde0c8", f"{node.id}\\nbuffer[{node.size}]"
-    if isinstance(node, BufRead):
-        return "box", "#fde0c8", f"{node.id}\\nbuf_read"
-    if isinstance(node, BufWrite):
-        return "box", "#fde0c8", f"{node.id}\\nbuf_write"
-    if isinstance(node, Splat):
-        return "box", "#fde0c8", f"{node.id}\\nsplat"
-    if isinstance(node, BufSize):
-        return "box", "#fde0c8", f"{node.id}\\nbuf_size"
-    if isinstance(node, Cycle):
-        return "box", "#fde0c8", f"{node.id}\\ncycle"
-    if isinstance(node, Wave):
-        return "box", "#fde0c8", f"{node.id}\\nwave"
-    if isinstance(node, Lookup):
-        return "box", "#fde0c8", f"{node.id}\\nlookup"
-    if isinstance(node, Elapsed):
-        return "box", "#fde0c8", f"{node.id}\\nelapsed"
-    if isinstance(node, MulAccum):
-        return "box", "#fde0c8", f"{node.id}\\nmulaccum"
-    if isinstance(node, RateDiv):
-        return "box", "#fde0c8", f"{node.id}\\nrate_div"
-    if isinstance(node, Scale):
-        return "box", "#fff3cd", f"{node.id}\\nscale"
-    if isinstance(node, SmoothParam):
-        return "box", "#fde0c8", f"{node.id}\\nsmooth"
-    if isinstance(node, Slide):
-        return "box", "#fde0c8", f"{node.id}\\nslide"
-    if isinstance(node, ADSR):
-        return "box", "#fde0c8", f"{node.id}\\nadsr"
-    if isinstance(node, Peek):
-        return "box", "#d4edda", f"{node.id}\\npeek"
-    if isinstance(node, Pass):
-        return "box", "#fff3cd", f"{node.id}\\npass"
-    if isinstance(node, NamedConstant):
-        return "box", "#e9ecef", f"{node.id}\\n{node.op}"
-    if isinstance(node, SampleRate):
-        return "box", "#e9ecef", f"{node.id}\\nsamplerate"
-    if isinstance(node, Smoothstep):
-        return "box", "#fff3cd", f"{node.id}\\nsmoothstep"
-    if isinstance(node, GateRoute):
-        return "box", "#fff3cd", f"{node.id}\\ngate {node.count}"
-    if isinstance(node, GateOut):
-        return "box", "#fff3cd", f"{node.id}\\ngate_out {node.channel}"
-    if isinstance(node, Selector):
-        return "box", "#fff3cd", f"{node.id}\\nselector"
-    if isinstance(node, Subgraph):
-        n_in = len(node.graph.inputs)
-        n_out = len(node.graph.outputs)
-        return "box3d", "#cce5ff", f"{node.id}\\nsubgraph ({n_in}in/{n_out}out)"
+    builder = _NODE_ATTR_BUILDERS.get(type(node))
+    if builder is not None:
+        return builder(node)
     return "box", "#ffffff", str(getattr(node, "id", "?"))
+
+
+def _iter_refs(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        refs: list[str] = []
+        for item in value.values():
+            refs.extend(_iter_refs(item))
+        return refs
+    if isinstance(value, list):
+        refs: list[str] = []
+        for item in value:
+            refs.extend(_iter_refs(item))
+        return refs
+    return []
+
+
+def _emit_node_edges(node: object, all_ids: set[str], w: Callable[[str], None]) -> None:
+    for field_name, value in node.__dict__.items():
+        if field_name in ("id", "op"):
+            continue
+        if not isinstance(value, (str, list, dict)):
+            continue
+        for ref in _iter_refs(value):
+            if ref not in all_ids:
+                continue
+            if is_feedback_edge(node, field_name):
+                w(f'    "{ref}" -> "{node.id}" [style=dashed label="z^-1"];')
+            else:
+                w(f'    "{ref}" -> "{node.id}";')
+
+
+def _emit_graph_nodes(graph: Graph, w: Callable[[str], None]) -> None:
+    for inp in graph.inputs:
+        w(
+            f'    "{inp.id}" [shape=box style="rounded,filled"'
+            f' fillcolor="#d4edda" label="{inp.id}"];'
+        )
+    for out in graph.outputs:
+        w(
+            f'    "{out.id}" [shape=box style="rounded,filled"'
+            f' fillcolor="#f8d7da"'
+            f' label="{out.id}"];'
+        )
+    for p in graph.params:
+        label = f"{p.name}\\n[{p.min}, {p.max}]\\ndefault={p.default}"
+        w(
+            f'    "{p.name}" [shape=ellipse style=filled'
+            f' fillcolor="#cce5ff"'
+            f' label="{label}"];'
+        )
+    for node in graph.nodes:
+        shape, color, label = _node_attrs(node)
+        w(
+            f'    "{node.id}" [shape={shape} style=filled'
+            f' fillcolor="{color}"'
+            f' label="{label}"];'
+        )
+
+
+def _emit_graph_edges(
+    graph: Graph,
+    all_ids: set[str],
+    w: Callable[[str], None],
+) -> None:
+    for node in graph.nodes:
+        _emit_node_edges(node, all_ids, w)
+    for out in graph.outputs:
+        w(f'    "{out.source}" -> "{out.id}";')
 
 
 def graph_to_dot(graph: Graph) -> str:
@@ -191,79 +235,23 @@ def graph_to_dot(graph: Graph) -> str:
     w('    node [fontname="Helvetica" fontsize=10];')
     w("")
 
-    # Build ID sets for reference resolution
-    all_ids: set[str] = set()
-    for inp in graph.inputs:
-        all_ids.add(inp.id)
-    for out in graph.outputs:
-        all_ids.add(out.id)
-    for p in graph.params:
-        all_ids.add(p.name)
-    for node in graph.nodes:
-        all_ids.add(node.id)
+    all_ids: set[str] = {inp.id for inp in graph.inputs}
+    all_ids.update(out.id for out in graph.outputs)
+    all_ids.update(p.name for p in graph.params)
+    all_ids.update(node.id for node in graph.nodes)
 
-    # Input nodes
-    for inp in graph.inputs:
-        w(
-            f'    "{inp.id}" [shape=box style="rounded,filled"'
-            f' fillcolor="#d4edda" label="{inp.id}"];'
-        )
-
-    # Output nodes
-    for out in graph.outputs:
-        w(
-            f'    "{out.id}" [shape=box style="rounded,filled"'
-            f' fillcolor="#f8d7da" label="{out.id}"];'
-        )
-
-    # Param nodes
-    for p in graph.params:
-        label = f"{p.name}\\n[{p.min}, {p.max}]\\ndefault={p.default}"
-        w(
-            f'    "{p.name}" [shape=ellipse style=filled fillcolor="#cce5ff" label="{label}"];'
-        )
-
-    # Processing nodes
-    for node in graph.nodes:
-        shape, color, label = _node_attrs(node)
-        w(
-            f'    "{node.id}" [shape={shape} style=filled fillcolor="{color}" label="{label}"];'
-        )
+    _emit_graph_nodes(graph, w)
 
     w("")
-
-    # Edges from node fields
-    for node in graph.nodes:
-        for field_name, value in node.__dict__.items():
-            if field_name in ("id", "op"):
-                continue
-            if isinstance(value, dict):
-                for v in value.values():
-                    if isinstance(v, str) and v in all_ids:
-                        w(f'    "{v}" -> "{node.id}";')
-                continue
-            if isinstance(value, list):
-                for item in value:
-                    if isinstance(item, str) and item in all_ids:
-                        w(f'    "{item}" -> "{node.id}";')
-                continue
-            if not isinstance(value, str) or value not in all_ids:
-                continue
-            if is_feedback_edge(node, field_name):
-                w(f'    "{value}" -> "{node.id}" [style=dashed label="z^-1"];')
-            else:
-                w(f'    "{value}" -> "{node.id}";')
-
-    # Output edges: source -> output
-    for out in graph.outputs:
-        w(f'    "{out.source}" -> "{out.id}";')
+    _emit_graph_edges(graph, all_ids, w)
 
     w("}")
     return "\n".join(lines) + "\n"
 
 
 def graph_to_dot_file(graph: Graph, output_dir: str | Path) -> Path:
-    """Write a DOT file for the graph to output_dir/{name}.dot.
+    """
+    Write a DOT file for the graph to output_dir/{name}.dot.
 
     If the ``dot`` binary is on PATH, also renders a PDF to
     ``output_dir/{name}.pdf``.
@@ -277,11 +265,12 @@ def graph_to_dot_file(graph: Graph, output_dir: str | Path) -> Path:
     dot_path.write_text(dot_src)
 
     dot_bin = shutil.which("dot")
-    if dot_bin is not None:
-        pdf_path = out / f"{graph.name}.pdf"
-        subprocess.run(
-            [dot_bin, "-Tpdf", str(dot_path), "-o", str(pdf_path)],
-            check=True,
+    if dot_bin is not None and graphviz is not None:
+        graphviz.Source(dot_src).render(
+            filename=graph.name,
+            directory=str(out),
+            format="pdf",
+            cleanup=True,
         )
 
     return dot_path

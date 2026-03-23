@@ -1,4 +1,5 @@
-"""DSP signal graph DSL: define, validate, compile to C++, and optimize.
+"""
+DSP signal graph DSL: define, validate, compile to C++, and optimize.
 
 Provides 43 node types (arithmetic, filters, oscillators, delays, buffers,
 state/timing, subgraph, utility), graph validation, topological sort, Graphviz
@@ -19,16 +20,23 @@ __version__ = "0.1.6"
 _AVAILABLE = False
 
 try:
-    from gen_dsp.graph.algebra import merge, parallel, series, split
-    from gen_dsp.graph.compile import compile_graph, compile_graph_to_file
     from gen_dsp.graph.adapter import (
         compile_for_gen_dsp,
         generate_adapter_cpp,
         generate_manifest,
     )
+    from gen_dsp.graph.algebra import merge, parallel, series, split
+    from gen_dsp.graph.compile import compile_graph, compile_graph_to_file
+    from gen_dsp.graph.dsl import (
+        GDSPCompileError,
+        GDSPSyntaxError,
+        parse,
+        parse_file,
+        parse_multi,
+    )
     from gen_dsp.graph.models import (
-        SVF,
         ADSR,
+        SVF,
         Accum,
         Allpass,
         AudioInput,
@@ -79,8 +87,8 @@ try:
         Selector,
         SinOsc,
         Slide,
-        Smoothstep,
         SmoothParam,
+        Smoothstep,
         Splat,
         Subgraph,
         TriOsc,
@@ -97,18 +105,11 @@ try:
         optimize_graph,
         promote_control_rate,
     )
+    from gen_dsp.graph.serialize import graph_to_gdsp
     from gen_dsp.graph.subgraph import expand_subgraphs
     from gen_dsp.graph.toposort import toposort
     from gen_dsp.graph.validate import GraphValidationError, validate_graph
     from gen_dsp.graph.visualize import graph_to_dot, graph_to_dot_file
-    from gen_dsp.graph.serialize import graph_to_gdsp
-    from gen_dsp.graph.dsl import (
-        parse,
-        parse_file,
-        parse_multi,
-        GDSPSyntaxError,
-        GDSPCompileError,
-    )
 
     _AVAILABLE = True
 
@@ -119,16 +120,17 @@ except ImportError:
 def _require_dsp_graph() -> None:
     """Raise ImportError with install instructions if pydantic is not available."""
     if not _AVAILABLE:
-        raise ImportError(
+        msg = (
             "dsp-graph functionality requires pydantic. "
             "Install with: pip install gen-dsp[graph]"
         )
+        raise ImportError(msg)
 
 
 __all__ = [
-    "_AVAILABLE",
-    "_require_dsp_graph",
     "ADSR",
+    "SVF",
+    "_AVAILABLE",
     "Accum",
     "Allpass",
     "AudioInput",
@@ -152,6 +154,8 @@ __all__ = [
     "Delta",
     "Elapsed",
     "Fold",
+    "GDSPCompileError",
+    "GDSPSyntaxError",
     "GateOut",
     "GateRoute",
     "Graph",
@@ -165,6 +169,8 @@ __all__ = [
     "Node",
     "Noise",
     "OnePole",
+    "OptimizeResult",
+    "OptimizeStats",
     "Param",
     "Pass",
     "Peek",
@@ -172,7 +178,6 @@ __all__ = [
     "PulseOsc",
     "RateDiv",
     "Ref",
-    "SVF",
     "SampleHold",
     "SampleRate",
     "SawOsc",
@@ -181,39 +186,36 @@ __all__ = [
     "Selector",
     "SinOsc",
     "Slide",
-    "Smoothstep",
     "SmoothParam",
+    "Smoothstep",
     "Splat",
     "Subgraph",
     "TriOsc",
     "UnaryOp",
     "Wave",
     "Wrap",
-    "GDSPCompileError",
-    "GDSPSyntaxError",
-    "merge",
-    "parallel",
-    "parse",
-    "parse_file",
-    "parse_multi",
-    "series",
-    "split",
+    "_require_dsp_graph",
     "compile_for_gen_dsp",
     "compile_graph",
     "compile_graph_to_file",
     "constant_fold",
-    "expand_subgraphs",
     "eliminate_cse",
     "eliminate_dead_nodes",
+    "expand_subgraphs",
     "generate_adapter_cpp",
     "generate_manifest",
     "graph_to_dot",
     "graph_to_dot_file",
     "graph_to_gdsp",
-    "OptimizeResult",
-    "OptimizeStats",
+    "merge",
     "optimize_graph",
+    "parallel",
+    "parse",
+    "parse_file",
+    "parse_multi",
     "promote_control_rate",
+    "series",
+    "split",
     "toposort",
     "validate_graph",
 ]

@@ -1,6 +1,9 @@
+"""Validation helpers for DSP graphs."""
+
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Self
 
 from gen_dsp.graph._deps import build_forward_deps
 from gen_dsp.graph.models import (
@@ -22,15 +25,28 @@ from gen_dsp.graph.models import (
     Wave,
 )
 from gen_dsp.graph.optimize import _STATEFUL_TYPES
+from gen_dsp.graph.subgraph import expand_subgraphs
+
+_NON_REF_FIELDS = {
+    "id",
+    "op",
+    "interp",
+    "mode",
+    "output",
+    "count",
+    "channel",
+    "fill",
+}
 
 
 class GraphValidationError(str):
-    """A structured validation error that behaves as a plain string.
+    """
+    A structured validation error that behaves as a plain string.
 
     Subclasses ``str`` so all existing call sites (``== []``, ``in``,
     ``"; ".join(errors)``, ``print(f"error: {err}")``) work unchanged.
 
-    Attributes
+    Attributes:
     ----------
     kind : str
         Machine-readable error category.  Stable values:
@@ -72,7 +88,10 @@ class GraphValidationError(str):
         Name of the offending field, if applicable.
     severity : str
         ``"error"`` or ``"warning"``.
+
     """
+
+    __slots__ = ("field_name", "kind", "node_id", "severity")
 
     kind: str
     node_id: str | None
@@ -87,37 +106,38 @@ class GraphValidationError(str):
         node_id: str | None = None,
         field_name: str | None = None,
         severity: str = "error",
-    ) -> GraphValidationError:
-        return super().__new__(cls, message)
-
-    def __init__(
-        self,
-        kind: str,
-        message: str,
-        *,
-        node_id: str | None = None,
-        field_name: str | None = None,
-        severity: str = "error",
-    ) -> None:
-        self.kind = kind
-        self.node_id = node_id
-        self.field_name = field_name
-        self.severity = severity
+    ) -> Self:
+        """Create a validation error with attached structured metadata."""
+        obj = str.__new__(cls, message)
+        obj.kind = kind
+        obj.node_id = node_id
+        obj.field_name = field_name
+        obj.severity = severity
+        return obj
 
 
 def _collect_refs(node: object) -> list[str]:
-    """Return all string references from a node's input fields (excluding 'id' and 'op')."""
+    """Return string refs from input fields, excluding `id` and `op`."""
     refs: list[str] = []
     for field_name, value in node.__dict__.items():
         if field_name in ("id", "op"):
             continue
         if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    refs.append(item)
+            refs.extend(item for item in value if isinstance(item, str))
         elif isinstance(value, str):
             refs.append(value)
     return refs
+
+
+def _is_invariant_value(value: object, param_names: set[str]) -> bool:
+    """Return True when a field value cannot vary at audio rate."""
+    if isinstance(value, float):
+        return True
+    if isinstance(value, str):
+        return value in param_names
+    if isinstance(value, list):
+        return all(_is_invariant_value(item, param_names) for item in value)
+    return False
 
 
 def _check_unmapped_params(
@@ -135,10 +155,14 @@ def _check_unmapped_params(
         sg_id = prefix + node.id if prefix else node.id
         for pname in sorted(unmapped):
             default = next(p.default for p in node.graph.params if p.name == pname)
+            message = (
+                f"Subgraph '{sg_id}': param '{pname}' not mapped, using default "
+                f"{default}"
+            )
             warnings.append(
                 GraphValidationError(
                     "unmapped_param",
-                    f"Subgraph '{sg_id}': param '{pname}' not mapped, using default {default}",
+                    message,
                     node_id=sg_id,
                     field_name=pname,
                     severity="warning",
@@ -149,44 +173,26 @@ def _check_unmapped_params(
         _check_unmapped_params(list(node.graph.nodes), inner_prefix, warnings)
 
 
-def validate_graph(
-    graph: Graph, *, warn_unmapped_params: bool = False
-) -> list[GraphValidationError]:
-    """Validate a DSP graph and return a list of errors (empty = valid).
-
-    When *warn_unmapped_params* is ``True``, warnings for subgraph params
-    that silently fall back to defaults are appended after all errors.
-    """
-    from gen_dsp.graph.subgraph import expand_subgraphs
-
-    # Collect unmapped-param warnings *before* expansion (needs Subgraph nodes)
-    warnings: list[GraphValidationError] = []
-    if warn_unmapped_params:
-        _check_unmapped_params(list(graph.nodes), "", warnings)
-
-    try:
-        graph = expand_subgraphs(graph)
-    except ValueError as e:
-        return [GraphValidationError("expansion_error", str(e))]
-
+def _collect_duplicate_and_collision_errors(
+    graph: Graph,
+) -> tuple[dict[str, int], set[str], set[str], list[GraphValidationError]]:
+    """Check for duplicate node IDs and collisions with inputs or params."""
     errors: list[GraphValidationError] = []
-
-    # Build ID sets
     node_ids: dict[str, int] = {}
     input_ids = {inp.id for inp in graph.inputs}
     param_names = {p.name for p in graph.params}
-    all_sources = input_ids | param_names  # valid non-node sources
 
-    # 1. Unique IDs -- no duplicate node IDs, no collision with inputs/params
     for node in graph.nodes:
         nid = node.id
         if nid in node_ids:
             errors.append(
                 GraphValidationError(
-                    "duplicate_id", f"Duplicate node ID: '{nid}'", node_id=nid
+                    "duplicate_id",
+                    f"Duplicate node ID: '{nid}'",
+                    node_id=nid,
                 )
             )
-        node_ids[nid] = 0  # just tracking existence
+        node_ids[nid] = 0
 
         if nid in input_ids:
             errors.append(
@@ -205,21 +211,15 @@ def validate_graph(
                 )
             )
 
-    all_ids = set(node_ids) | all_sources
+    return node_ids, input_ids, param_names, errors
 
-    # String fields that are enum selectors, not node references
-    _NON_REF_FIELDS = {
-        "id",
-        "op",
-        "interp",
-        "mode",
-        "output",
-        "count",
-        "channel",
-        "fill",
-    }
 
-    # 2. Reference resolution -- every str input resolves to a known ID
+def _collect_reference_errors(
+    graph: Graph,
+    all_ids: set[str],
+) -> list[GraphValidationError]:
+    """Check that every string reference resolves to a known ID."""
+    errors: list[GraphValidationError] = []
     for node in graph.nodes:
         for field_name, value in node.__dict__.items():
             if field_name in _NON_REF_FIELDS:
@@ -227,47 +227,59 @@ def validate_graph(
             if isinstance(value, list):
                 for idx, item in enumerate(value):
                     if isinstance(item, str) and item not in all_ids:
-                        nid = node.id
                         errors.append(
                             GraphValidationError(
                                 "dangling_ref",
-                                f"Node '{nid}' field '{field_name}[{idx}]' references unknown ID '{item}'",
-                                node_id=nid,
+                                f"Node '{node.id}' field '{field_name}[{idx}]' "
+                                f"references unknown ID '{item}'",
+                                node_id=node.id,
                                 field_name=field_name,
                             )
                         )
-            elif isinstance(value, str):
-                if value not in all_ids:
-                    nid = node.id
-                    errors.append(
-                        GraphValidationError(
-                            "dangling_ref",
-                            f"Node '{nid}' field '{field_name}' references unknown ID '{value}'",
-                            node_id=nid,
-                            field_name=field_name,
-                        )
+            elif isinstance(value, str) and value not in all_ids:
+                errors.append(
+                    GraphValidationError(
+                        "dangling_ref",
+                        f"Node '{node.id}' field '{field_name}' references unknown ID "
+                        f"'{value}'",
+                        node_id=node.id,
+                        field_name=field_name,
                     )
-
-    # 3. Output resolution -- every output source resolves to a node ID
-    for out in graph.outputs:
-        if out.source not in node_ids:
-            errors.append(
-                GraphValidationError(
-                    "bad_output_source",
-                    f"Output '{out.id}' source '{out.source}' does not reference a node",
-                    node_id=out.id,
-                    field_name="source",
                 )
-            )
+    return errors
 
-    # 4. Delay consistency -- DelayRead/DelayWrite must reference a DelayLine
+
+def _collect_output_errors(
+    graph: Graph,
+    node_ids: set[str],
+) -> list[GraphValidationError]:
+    """Check that every output source references a node."""
+    errors: list[GraphValidationError] = []
+    for out in graph.outputs:
+        if out.source in node_ids:
+            continue
+        errors.append(
+            GraphValidationError(
+                "bad_output_source",
+                f"Output '{out.id}' source '{out.source}' does not reference a node",
+                node_id=out.id,
+                field_name="source",
+            )
+        )
+    return errors
+
+
+def _collect_delay_errors(graph: Graph) -> list[GraphValidationError]:
+    """Check that delay nodes reference existing delay lines."""
+    errors: list[GraphValidationError] = []
     delay_line_ids = {node.id for node in graph.nodes if isinstance(node, DelayLine)}
     for node in graph.nodes:
         if isinstance(node, DelayRead) and node.delay not in delay_line_ids:
             errors.append(
                 GraphValidationError(
                     "missing_delay_line",
-                    f"DelayRead '{node.id}' references non-existent delay line '{node.delay}'",
+                    f"DelayRead '{node.id}' references non-existent delay line "
+                    f"'{node.delay}'",
                     node_id=node.id,
                     field_name="delay",
                 )
@@ -276,20 +288,26 @@ def validate_graph(
             errors.append(
                 GraphValidationError(
                     "missing_delay_line",
-                    f"DelayWrite '{node.id}' references non-existent delay line '{node.delay}'",
+                    f"DelayWrite '{node.id}' references non-existent delay line "
+                    f"'{node.delay}'",
                     node_id=node.id,
                     field_name="delay",
                 )
             )
+    return errors
 
-    # 4b. Buffer consistency -- BufRead/BufWrite/BufSize must reference a Buffer
+
+def _collect_buffer_errors(graph: Graph) -> list[GraphValidationError]:
+    """Check that buffer nodes reference existing buffers."""
+    errors: list[GraphValidationError] = []
     buffer_ids = {node.id for node in graph.nodes if isinstance(node, Buffer)}
     for node in graph.nodes:
         if isinstance(node, BufRead) and node.buffer not in buffer_ids:
             errors.append(
                 GraphValidationError(
                     "missing_buffer",
-                    f"BufRead '{node.id}' references non-existent buffer '{node.buffer}'",
+                    f"BufRead '{node.id}' references non-existent buffer "
+                    f"'{node.buffer}'",
                     node_id=node.id,
                     field_name="buffer",
                 )
@@ -298,7 +316,8 @@ def validate_graph(
             errors.append(
                 GraphValidationError(
                     "missing_buffer",
-                    f"BufWrite '{node.id}' references non-existent buffer '{node.buffer}'",
+                    f"BufWrite '{node.id}' references non-existent buffer "
+                    f"'{node.buffer}'",
                     node_id=node.id,
                     field_name="buffer",
                 )
@@ -316,7 +335,8 @@ def validate_graph(
             errors.append(
                 GraphValidationError(
                     "missing_buffer",
-                    f"BufSize '{node.id}' references non-existent buffer '{node.buffer}'",
+                    f"BufSize '{node.id}' references non-existent buffer "
+                    f"'{node.buffer}'",
                     node_id=node.id,
                     field_name="buffer",
                 )
@@ -343,131 +363,160 @@ def validate_graph(
             errors.append(
                 GraphValidationError(
                     "missing_buffer",
-                    f"Lookup '{node.id}' references non-existent buffer '{node.buffer}'",
+                    f"Lookup '{node.id}' references non-existent buffer "
+                    f"'{node.buffer}'",
                     node_id=node.id,
                     field_name="buffer",
                 )
             )
+    return errors
 
-    # 4c. Gate consistency -- GateOut must reference a GateRoute, channel in range
+
+def _collect_gate_errors(graph: Graph) -> list[GraphValidationError]:
+    """Check that gate outputs reference a gate route and valid channels."""
+    errors: list[GraphValidationError] = []
     gate_route_map = {
         node.id: node for node in graph.nodes if isinstance(node, GateRoute)
     }
     for node in graph.nodes:
-        if isinstance(node, GateOut):
-            if node.gate not in gate_route_map:
-                errors.append(
-                    GraphValidationError(
-                        "missing_gate_route",
-                        f"GateOut '{node.id}' references non-existent gate route '{node.gate}'",
-                        node_id=node.id,
-                        field_name="gate",
-                    )
+        if not isinstance(node, GateOut):
+            continue
+        gate_route = gate_route_map.get(node.gate)
+        if gate_route is None:
+            errors.append(
+                GraphValidationError(
+                    "missing_gate_route",
+                    f"GateOut '{node.id}' references non-existent gate route "
+                    f"'{node.gate}'",
+                    node_id=node.id,
+                    field_name="gate",
                 )
-            else:
-                gate_route = gate_route_map[node.gate]
-                if node.channel < 1 or node.channel > gate_route.count:
-                    errors.append(
-                        GraphValidationError(
-                            "gate_channel_range",
-                            f"GateOut '{node.id}' channel {node.channel} out of range [1, {gate_route.count}]",
-                            node_id=node.id,
-                            field_name="channel",
-                        )
-                    )
+            )
+            continue
+        if node.channel < 1 or node.channel > gate_route.count:
+            errors.append(
+                GraphValidationError(
+                    "gate_channel_range",
+                    f"GateOut '{node.id}' channel {node.channel} out of range "
+                    f"[1, {gate_route.count}]",
+                    node_id=node.id,
+                    field_name="channel",
+                )
+            )
+    return errors
 
-    # 5. Control-rate consistency
-    if graph.control_interval > 0 and graph.control_nodes:
-        ctrl_set = set(graph.control_nodes)
-        node_id_set = set(node_ids)
 
-        for cid in graph.control_nodes:
-            if cid not in node_id_set:
+def _collect_control_invariant_ids(
+    graph: Graph,
+    param_names: set[str],
+) -> set[str]:
+    """Return node IDs that are safe to treat as invariant."""
+    invariant_ids: set[str] = set()
+    for node in graph.nodes:
+        if isinstance(node, _STATEFUL_TYPES):
+            continue
+        is_inv = True
+        for fn, val in node.__dict__.items():
+            if fn in _NON_REF_FIELDS:
+                continue
+            if not _is_invariant_value(val, param_names):
+                is_inv = False
+                break
+        if is_inv:
+            invariant_ids.add(node.id)
+    return invariant_ids
+
+
+def _collect_control_node_dependency_errors(
+    node: object,
+    cid: str,
+    input_ids: set[str],
+    node_id_set: set[str],
+    allowed: set[str],
+) -> list[GraphValidationError]:
+    """Check one control-rate node for audio/control dependencies."""
+    errors: list[GraphValidationError] = []
+    if isinstance(node, History):
+        return errors
+    for field_name, value in node.__dict__.items():
+        if field_name in _NON_REF_FIELDS:
+            continue
+        if isinstance(value, list):
+            str_refs = [v for v in value if isinstance(v, str)]
+        elif isinstance(value, str):
+            str_refs = [value]
+        else:
+            continue
+        for ref_val in str_refs:
+            if ref_val in input_ids:
                 errors.append(
                     GraphValidationError(
-                        "invalid_control_node",
-                        f"control_nodes: '{cid}' is not a node ID",
+                        "control_audio_dep",
+                        f"Control-rate node '{cid}' depends on audio input '{ref_val}'",
                         node_id=cid,
+                        field_name=field_name,
                     )
                 )
+            elif ref_val in node_id_set and ref_val not in allowed:
+                errors.append(
+                    GraphValidationError(
+                        "control_rate_dep",
+                        f"Control-rate node '{cid}' depends on audio-rate node "
+                        f"'{ref_val}'",
+                        node_id=cid,
+                        field_name=field_name,
+                    )
+                )
+    return errors
 
-        # Compute invariant node IDs: pure nodes depending only on
-        # params/literals/other invariant nodes.  These are LICM-hoistable and
-        # safe for control-rate nodes to reference.
-        invariant_ids: set[str] = set()
-        node_by_id = {n.id: n for n in graph.nodes}
-        for node in graph.nodes:
-            if isinstance(node, _STATEFUL_TYPES):
-                continue
-            is_inv = True
-            for fn, val in node.__dict__.items():
-                if fn in _NON_REF_FIELDS:
-                    continue
-                if isinstance(val, float):
-                    continue
-                if isinstance(val, list):
-                    for item in val:
-                        if isinstance(item, float):
-                            continue
-                        if isinstance(item, str):
-                            if item in param_names or item in invariant_ids:
-                                continue
-                            is_inv = False
-                            break
-                    if not is_inv:
-                        break
-                    continue
-                if isinstance(val, str):
-                    if val in param_names or val in invariant_ids:
-                        continue
-                    is_inv = False
-                    break
-            if is_inv:
-                invariant_ids.add(node.id)
 
-        # Allowed deps for a control-rate node: params, other ctrl nodes, invariant nodes
-        allowed = ctrl_set | param_names | invariant_ids
-        for cid in graph.control_nodes:
-            if cid not in node_by_id:
-                continue
-            node = node_by_id[cid]
-            if isinstance(node, History):
-                continue
-            for field_name, value in node.__dict__.items():
-                if field_name in _NON_REF_FIELDS:
-                    continue
-                str_refs: list[str] = []
-                if isinstance(value, list):
-                    str_refs = [v for v in value if isinstance(v, str)]
-                elif isinstance(value, str):
-                    str_refs = [value]
-                else:
-                    continue
-                for ref_val in str_refs:
-                    if ref_val in input_ids:
-                        errors.append(
-                            GraphValidationError(
-                                "control_audio_dep",
-                                f"Control-rate node '{cid}' depends on audio input '{ref_val}'",
-                                node_id=cid,
-                                field_name=field_name,
-                            )
-                        )
-                    elif ref_val in node_id_set and ref_val not in allowed:
-                        errors.append(
-                            GraphValidationError(
-                                "control_rate_dep",
-                                f"Control-rate node '{cid}' depends on audio-rate node '{ref_val}'",
-                                node_id=cid,
-                                field_name=field_name,
-                            )
-                        )
+def _collect_control_errors(
+    graph: Graph,
+    node_ids: dict[str, int],
+    input_ids: set[str],
+    param_names: set[str],
+) -> list[GraphValidationError]:
+    """Check control-rate node dependencies."""
+    if graph.control_interval <= 0 or not graph.control_nodes:
+        return []
 
-    # 6. No pure cycles -- topo sort on non-feedback edges must succeed
+    errors: list[GraphValidationError] = []
+    node_id_set = set(node_ids)
+    node_by_id = {n.id: n for n in graph.nodes}
+
+    errors.extend(
+        [
+            GraphValidationError(
+                "invalid_control_node",
+                f"control_nodes: '{cid}' is not a node ID",
+                node_id=cid,
+            )
+            for cid in graph.control_nodes
+            if cid not in node_id_set
+        ]
+    )
+
+    invariant_ids = _collect_control_invariant_ids(graph, param_names)
+    allowed = set(graph.control_nodes) | param_names | invariant_ids
+    for cid in graph.control_nodes:
+        node = node_by_id.get(cid)
+        if node is None:
+            continue
+        errors.extend(
+            _collect_control_node_dependency_errors(
+                node, cid, input_ids, node_id_set, allowed
+            )
+        )
+    return errors
+
+
+def _collect_cycle_errors(
+    graph: Graph,
+    node_ids: dict[str, int],
+) -> list[GraphValidationError]:
+    """Check for pure cycles in the graph."""
     deps = build_forward_deps(graph)
-
-    # Kahn's algorithm
-    in_degree: dict[str, int] = {nid: 0 for nid in node_ids}
+    in_degree: dict[str, int] = dict.fromkeys(node_ids, 0)
     reverse: dict[str, list[str]] = defaultdict(list)
     for nid, dep_set in deps.items():
         for dep in dep_set:
@@ -486,15 +535,42 @@ def validate_graph(
                 queue.append(dependent)
 
     if visited < len(node_ids):
-        cycle_nodes = [nid for nid, deg in in_degree.items() if deg > 0]
-        errors.append(
-            GraphValidationError(
-                "cycle",
-                f"Graph contains a cycle through nodes: {', '.join(sorted(cycle_nodes))}",
-            )
-        )
+        cycle_nodes = sorted(nid for nid, deg in in_degree.items() if deg > 0)
+        message = f"Graph contains a cycle through nodes: {', '.join(cycle_nodes)}"
+        return [GraphValidationError("cycle", message)]
+    return []
 
-    # Append warnings after errors
+
+def validate_graph(
+    graph: Graph, *, warn_unmapped_params: bool = False
+) -> list[GraphValidationError]:
+    """
+    Validate a DSP graph and return a list of errors (empty = valid).
+
+    When *warn_unmapped_params* is ``True``, warnings for subgraph params
+    that silently fall back to defaults are appended after all errors.
+    """
+    # Collect unmapped-param warnings *before* expansion (needs Subgraph nodes)
+    warnings: list[GraphValidationError] = []
+    if warn_unmapped_params:
+        _check_unmapped_params(list(graph.nodes), "", warnings)
+
+    try:
+        graph = expand_subgraphs(graph)
+    except ValueError as exc:
+        return [GraphValidationError("expansion_error", str(exc))]
+
+    node_ids, input_ids, param_names, errors = _collect_duplicate_and_collision_errors(
+        graph
+    )
+    all_ids = set(node_ids) | input_ids | param_names
+    errors.extend(_collect_reference_errors(graph, all_ids))
+    errors.extend(_collect_output_errors(graph, set(node_ids)))
+    errors.extend(_collect_delay_errors(graph))
+    errors.extend(_collect_buffer_errors(graph))
+    errors.extend(_collect_gate_errors(graph))
+    errors.extend(_collect_control_errors(graph, node_ids, input_ids, param_names))
+    errors.extend(_collect_cycle_errors(graph, node_ids))
+
     errors.extend(warnings)
-
     return errors

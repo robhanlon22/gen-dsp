@@ -11,7 +11,6 @@ Analyzes gen~ exports to detect:
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from gen_dsp.errors import ParseError
 
@@ -42,13 +41,13 @@ class ExportInfo:
     has_exp2f_issue: bool = False
 
     # Path to the main .cpp file
-    cpp_path: Optional[Path] = None
+    cpp_path: Path | None = None
 
     # Path to the main .h file
-    h_path: Optional[Path] = None
+    h_path: Path | None = None
 
     # Path to genlib_ops.h (where exp2f issue occurs)
-    genlib_ops_path: Optional[Path] = None
+    genlib_ops_path: Path | None = None
 
     # Signal input names (from gen_kernel_innames[], e.g. ["carrier", "c/m ratio"])
     input_names: list[str] = field(default_factory=list)
@@ -74,7 +73,8 @@ class GenExportParser:
     # Pattern for num_params
     NUMPARAMS_PATTERN = re.compile(r"int\s+num_params\s*\(\s*\)\s*\{\s*return\s+(\d+)")
 
-    # Pattern for input names: const char *gen_kernel_innames[] = { "carrier", "c/m ratio" };
+    # Pattern for input names:
+    # const char *gen_kernel_innames[] = { "carrier", "c/m ratio" }.
     INNAMES_PATTERN = re.compile(
         r"(?:const\s+)?char\s*\*\s*gen_kernel_innames\s*\[\s*\]\s*=\s*\{([^}]+)\}"
     )
@@ -102,17 +102,20 @@ class GenExportParser:
     # Prefixes for genlib-internal members (not user buffers)
     INTERNAL_MEMBER_PREFIXES = ("m_delay", "__m_")
 
-    def __init__(self, export_path: str | Path):
+    def __init__(self, export_path: str | Path) -> None:
         """
         Initialize parser with path to gen~ export directory.
 
         Args:
             export_path: Path to directory containing exported gen~ code.
                          Should contain a .cpp/.h file pair and gen_dsp/ subdirectory.
+
         """
         self.export_path = Path(export_path).resolve()
         if not self.export_path.is_dir():
-            raise ParseError(f"Export path is not a directory: {self.export_path}")
+            message = f"Export path is not a directory: {self.export_path}"
+            raise ParseError(message)
+        self._find_main_files()
 
     def parse(self) -> ExportInfo:
         """
@@ -123,6 +126,7 @@ class GenExportParser:
 
         Raises:
             ParseError: If export cannot be parsed.
+
         """
         # Find the main .cpp and .h files
         cpp_path, h_path = self._find_main_files()
@@ -166,6 +170,7 @@ class GenExportParser:
 
         Raises:
             ParseError: If files cannot be found.
+
         """
         # Look for .cpp files in the export directory (not genlib files)
         cpp_files = [
@@ -175,9 +180,12 @@ class GenExportParser:
         ]
 
         if not cpp_files:
-            raise ParseError(
+            msg = (
                 f"No gen~ export .cpp file found in {self.export_path}. "
                 "Expected a file like 'gen_exported.cpp' or similar."
+            )
+            raise ParseError(
+                msg
             )
 
         if len(cpp_files) > 1:
@@ -185,16 +193,18 @@ class GenExportParser:
             cpp_files = [f for f in cpp_files if "genlib" not in f.name.lower()]
 
         if len(cpp_files) != 1:
-            raise ParseError(
-                f"Expected exactly one gen~ export .cpp file, found: "
+            message = (
+                "Expected exactly one gen~ export .cpp file, found: "
                 f"{[f.name for f in cpp_files]}"
             )
+            raise ParseError(message)
 
         cpp_path = cpp_files[0]
         h_path = cpp_path.with_suffix(".h")
 
         if not h_path.exists():
-            raise ParseError(f"Header file not found: {h_path}")
+            message = f"Header file not found: {h_path}"
+            raise ParseError(message)
 
         return cpp_path, h_path
 
@@ -220,7 +230,8 @@ class GenExportParser:
         return 0
 
     def _extract_input_names(self, content: str) -> list[str]:
-        """Extract signal input names from gen_kernel_innames[].
+        """
+        Extract signal input names from gen_kernel_innames[].
 
         Parses: const char *gen_kernel_innames[] = { "carrier", "c/m ratio" };
         Returns: ["carrier", "c/m ratio"]
@@ -248,6 +259,7 @@ class GenExportParser:
 
         Returns:
             List of unique buffer names found.
+
         """
         candidates: set[str] = set()
 
@@ -260,9 +272,10 @@ class GenExportParser:
         ]:
             for match in pattern.finditer(content):
                 name = match.group(1)
-                if name not in self.EXCLUDED_IDENTIFIERS:
-                    if not name.startswith(("m_", "__", "gen_")):
-                        candidates.add(name)
+                if name not in self.EXCLUDED_IDENTIFIERS and not name.startswith(
+                    ("m_", "__", "gen_")
+                ):
+                    candidates.add(name)
 
         # Strategy 2: Data member declarations with .reset("user_name", ...)
         # Finds buffers like: Data m_storage_3; ... m_storage_3.reset("storage", ...)
@@ -270,18 +283,20 @@ class GenExportParser:
         for match in self.DATA_RESET_PATTERN.finditer(content):
             member_name = match.group(1)
             user_name = match.group(2)
-            if member_name in data_members:
-                if not member_name.startswith(self.INTERNAL_MEMBER_PREFIXES):
-                    candidates.add(user_name)
+            if member_name in data_members and not member_name.startswith(
+                self.INTERNAL_MEMBER_PREFIXES
+            ):
+                candidates.add(user_name)
 
         return sorted(candidates)
 
-    def _check_exp2f_issue(self) -> tuple[Optional[Path], bool]:
+    def _check_exp2f_issue(self) -> tuple[Path | None, bool]:
         """
         Check for exp2f issue in genlib_ops.h.
 
         Returns:
             Tuple of (path_to_genlib_ops_h, has_exp2f_issue).
+
         """
         gen_dsp_path = self.export_path / "gen_dsp"
         if not gen_dsp_path.is_dir():
@@ -305,10 +320,10 @@ class GenExportParser:
 
         Returns:
             List of invalid buffer names (empty if all valid).
-        """
-        invalid = []
-        for name in buffer_names:
-            if not self.C_IDENTIFIER_PATTERN.match(name):
-                invalid.append(name)
 
-        return invalid
+        """
+        return [
+            name
+            for name in buffer_names
+            if not self.C_IDENTIFIER_PATTERN.match(name)
+        ]

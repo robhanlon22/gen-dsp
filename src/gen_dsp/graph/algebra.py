@@ -1,4 +1,5 @@
-"""FAUST-style block diagram algebra for composing DSP graphs.
+"""
+FAUST-style block diagram algebra for composing DSP graphs.
 
 Provides four binary combinators -- ``series``, ``parallel``, ``split``,
 ``merge`` -- that compose :class:`Graph` objects into new :class:`Graph`
@@ -45,11 +46,13 @@ def _merge_params(
     a_id: str,
     b_id: str,
 ) -> tuple[list[Param], dict[str, str | float], dict[str, str | float]]:
-    """Build outer params and per-subgraph param maps.
+    """
+    Build outer params and per-subgraph param maps.
 
     Returns:
         (outer_params, a_param_map, b_param_map) where each map is
         ``{inner_name: outer_name}`` suitable for ``Subgraph.params``.
+
     """
     outer_params: list[Param] = []
     a_map: dict[str, str | float] = {}
@@ -78,16 +81,18 @@ def _merge_params(
 
 
 def series(a: Graph, b: Graph) -> Graph:
-    """Pipe *a*'s outputs into *b*'s inputs positionally.
+    """
+    Pipe *a*'s outputs into *b*'s inputs positionally.
 
     Requires ``len(a.outputs) == len(b.inputs)``.
     Result: inputs = a.inputs, outputs = b.outputs, params = merged(a+b).
     """
     if len(a.outputs) != len(b.inputs):
-        raise ValueError(
+        msg = (
             f"series: output count of '{a.name}' ({len(a.outputs)}) "
             f"!= input count of '{b.name}' ({len(b.inputs)})"
         )
+        raise ValueError(msg)
 
     a_id, b_id = _pick_ids(a, b)
     outer_params, a_pmap, b_pmap = _merge_params(a, b, a_id, b_id)
@@ -105,9 +110,9 @@ def series(a: Graph, b: Graph) -> Graph:
         b_input_map[inp.id] = f"{a_id}__{a.outputs[i].id}"
 
     # Outer outputs mirror b's outputs via compound refs
-    outer_outputs: list[AudioOutput] = []
-    for out in b.outputs:
-        outer_outputs.append(AudioOutput(id=out.id, source=f"{b_id}__{out.id}"))
+    outer_outputs = [
+        AudioOutput(id=out.id, source=f"{b_id}__{out.id}") for out in b.outputs
+    ]
 
     sg_a = Subgraph(id=a_id, graph=a, inputs=a_input_map, params=a_pmap)
     sg_b = Subgraph(id=b_id, graph=b, inputs=b_input_map, params=b_pmap)
@@ -123,7 +128,8 @@ def series(a: Graph, b: Graph) -> Graph:
 
 
 def parallel(a: Graph, b: Graph) -> Graph:
-    """Stack *a* and *b* side by side with independent I/O.
+    """
+    Stack *a* and *b* side by side with independent I/O.
 
     No constraints on I/O counts.
     Result: inputs = a_prefixed + b_prefixed, outputs = a_prefixed + b_prefixed.
@@ -144,15 +150,13 @@ def parallel(a: Graph, b: Graph) -> Graph:
         outer_inputs.append(AudioInput(id=outer_id))
         b_input_map[inp.id] = outer_id
 
-    outer_outputs: list[AudioOutput] = []
-    for out in a.outputs:
-        outer_outputs.append(
-            AudioOutput(id=f"{a_id}_{out.id}", source=f"{a_id}__{out.id}")
-        )
-    for out in b.outputs:
-        outer_outputs.append(
-            AudioOutput(id=f"{b_id}_{out.id}", source=f"{b_id}__{out.id}")
-        )
+    outer_outputs = [
+        AudioOutput(id=f"{a_id}_{out.id}", source=f"{a_id}__{out.id}")
+        for out in a.outputs
+    ] + [
+        AudioOutput(id=f"{b_id}_{out.id}", source=f"{b_id}__{out.id}")
+        for out in b.outputs
+    ]
 
     sg_a = Subgraph(id=a_id, graph=a, inputs=a_input_map, params=a_pmap)
     sg_b = Subgraph(id=b_id, graph=b, inputs=b_input_map, params=b_pmap)
@@ -168,7 +172,8 @@ def parallel(a: Graph, b: Graph) -> Graph:
 
 
 def split(a: Graph, b: Graph) -> Graph:
-    """Fan-out: *a*'s outputs cyclically distributed to fill *b*'s inputs.
+    """
+    Fan-out: *a*'s outputs cyclically distributed to fill *b*'s inputs.
 
     Requires ``len(b.inputs) % len(a.outputs) == 0``.
     Result: inputs = a.inputs, outputs = b.outputs, params = merged(a+b).
@@ -176,12 +181,14 @@ def split(a: Graph, b: Graph) -> Graph:
     n_a_out = len(a.outputs)
     n_b_in = len(b.inputs)
     if n_a_out == 0:
-        raise ValueError(f"split: '{a.name}' has no outputs")
+        msg = f"split: '{a.name}' has no outputs"
+        raise ValueError(msg)
     if n_b_in % n_a_out != 0:
-        raise ValueError(
+        msg = (
             f"split: input count of '{b.name}' ({n_b_in}) "
             f"is not a multiple of output count of '{a.name}' ({n_a_out})"
         )
+        raise ValueError(msg)
 
     a_id, b_id = _pick_ids(a, b)
     outer_params, a_pmap, b_pmap = _merge_params(a, b, a_id, b_id)
@@ -197,9 +204,9 @@ def split(a: Graph, b: Graph) -> Graph:
     for i, inp in enumerate(b.inputs):
         b_input_map[inp.id] = f"{a_id}__{a.outputs[i % n_a_out].id}"
 
-    outer_outputs: list[AudioOutput] = []
-    for out in b.outputs:
-        outer_outputs.append(AudioOutput(id=out.id, source=f"{b_id}__{out.id}"))
+    outer_outputs = [
+        AudioOutput(id=out.id, source=f"{b_id}__{out.id}") for out in b.outputs
+    ]
 
     sg_a = Subgraph(id=a_id, graph=a, inputs=a_input_map, params=a_pmap)
     sg_b = Subgraph(id=b_id, graph=b, inputs=b_input_map, params=b_pmap)
@@ -215,7 +222,8 @@ def split(a: Graph, b: Graph) -> Graph:
 
 
 def merge(a: Graph, b: Graph) -> Graph:
-    """Fan-in: *a*'s outputs summed in groups to feed *b*'s inputs.
+    """
+    Fan-in: *a*'s outputs summed in groups to feed *b*'s inputs.
 
     Requires ``len(a.outputs) % len(b.inputs) == 0``.
     When k=1 (equal counts), degenerates to direct wiring (like series).
@@ -224,12 +232,14 @@ def merge(a: Graph, b: Graph) -> Graph:
     n_a_out = len(a.outputs)
     n_b_in = len(b.inputs)
     if n_b_in == 0:
-        raise ValueError(f"merge: '{b.name}' has no inputs")
+        msg = f"merge: '{b.name}' has no inputs"
+        raise ValueError(msg)
     if n_a_out % n_b_in != 0:
-        raise ValueError(
+        msg = (
             f"merge: output count of '{a.name}' ({n_a_out}) "
             f"is not a multiple of input count of '{b.name}' ({n_b_in})"
         )
+        raise ValueError(msg)
 
     k = n_a_out // n_b_in
     a_id, b_id = _pick_ids(a, b)
@@ -250,8 +260,6 @@ def merge(a: Graph, b: Graph) -> Graph:
             # Direct wiring, no sum node needed
             b_input_map[b.inputs[j].id] = f"{a_id}__{a.outputs[group_start].id}"
         else:
-            # Build add chain: sum_j_0 = out[0] + out[1],
-            #                   sum_j_1 = sum_j_0 + out[2], ...
             prev_id = f"{a_id}__{a.outputs[group_start].id}"
             for m in range(1, k):
                 sum_id = f"_sum_{j}_{m - 1}"
@@ -260,9 +268,9 @@ def merge(a: Graph, b: Graph) -> Graph:
                 prev_id = sum_id
             b_input_map[b.inputs[j].id] = prev_id
 
-    outer_outputs: list[AudioOutput] = []
-    for out in b.outputs:
-        outer_outputs.append(AudioOutput(id=out.id, source=f"{b_id}__{out.id}"))
+    outer_outputs = [
+        AudioOutput(id=out.id, source=f"{b_id}__{out.id}") for out in b.outputs
+    ]
 
     sg_a = Subgraph(id=a_id, graph=a, inputs=a_input_map, params=a_pmap)
     sg_b = Subgraph(id=b_id, graph=b, inputs=b_input_map, params=b_pmap)
@@ -285,5 +293,13 @@ def merge(a: Graph, b: Graph) -> Graph:
 # Operator overloading (active on import)
 # ---------------------------------------------------------------------------
 
-Graph.__rshift__ = lambda self, other: series(self, other)  # type: ignore[operator]
-Graph.__floordiv__ = lambda self, other: parallel(self, other)  # type: ignore[operator]
+def _graph_series(self: Graph, other: Graph) -> Graph:
+    return series(self, other)
+
+
+def _graph_parallel(self: Graph, other: Graph) -> Graph:
+    return parallel(self, other)
+
+
+Graph.__rshift__ = _graph_series  # type: ignore[operator]
+Graph.__floordiv__ = _graph_parallel  # type: ignore[operator]

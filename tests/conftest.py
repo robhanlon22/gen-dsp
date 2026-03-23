@@ -1,12 +1,15 @@
 """Pytest configuration and fixtures for gen_dsp tests."""
 
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
 
+import numpy as np
 import pytest
 
 try:
@@ -15,22 +18,37 @@ except ImportError:
     _minihost = None
 
 
+_SUBPROCESS_RUN = subprocess.run
+
+
+def _resolve_executable(name: str) -> str:
+    """Return the absolute path for an executable."""
+    path = shutil.which(name)
+    if path is None:
+        message = f"{name} not found"
+        raise RuntimeError(message)
+    return path
+
+
+MINIHOST_ENERGY_EPSILON = 1e-10
+
+
 def _validate_plugin_with_minihost(
-    plugin_path,
-    num_inputs,
-    num_outputs,
-    num_params=0,
-    send_midi=False,
-    check_energy=True,
-):
-    """Load a plugin via minihost, process audio, verify output energy.
+    plugin_path: Path,
+    num_inputs: int,
+    num_outputs: int,
+    num_params: int = 0,
+    **options: object,
+) -> None:
+    """
+    Load a plugin via minihost, process audio, verify output energy.
 
     Silently returns if minihost is not installed.
     """
     if _minihost is None:
         return
-
-    import numpy as np
+    send_midi = bool(options.get("send_midi", False))
+    check_energy = bool(options.get("check_energy", True))
 
     plugin = _minihost.Plugin(
         str(plugin_path),
@@ -43,14 +61,13 @@ def _validate_plugin_with_minihost(
 
     n_blocks = 8  # enough for FFT-based processors
     block_size = 512
+    rng = np.random.default_rng()
     output = np.zeros((num_outputs, block_size), dtype=np.float32)
     energy = 0.0
 
     for i in range(n_blocks):
         if num_inputs > 0:
-            inp = np.random.uniform(-0.5, 0.5, (num_inputs, block_size)).astype(
-                np.float32
-            )
+            inp = rng.uniform(-0.5, 0.5, (num_inputs, block_size)).astype(np.float32)
         else:
             inp = np.zeros((0, block_size), dtype=np.float32)
 
@@ -63,11 +80,13 @@ def _validate_plugin_with_minihost(
         energy += float(np.sum(output**2))
 
     if check_energy:
-        assert energy > 1e-10, f"Plugin produced no audio output (energy={energy})"
+        assert energy > MINIHOST_ENERGY_EPSILON, (
+            f"Plugin produced no audio output (energy={energy})"
+        )
 
 
 @pytest.fixture
-def validate_minihost():
+def validate_minihost() -> Callable[..., None]:
     """Fixture providing the minihost validation helper."""
     return _validate_plugin_with_minihost
 
@@ -131,7 +150,8 @@ _FETCHCONTENT_CACHE = (
 
 @pytest.fixture(scope="session")
 def fetchcontent_cache() -> Path:
-    """Fixed-path FetchContent cache shared across all build tests.
+    """
+    Fixed-path FetchContent cache shared across all build tests.
 
     Persists across pytest sessions so large SDKs (e.g. VST3 ~50 MB)
     are only downloaded once.  Build/subbuild directories are cleared
@@ -162,8 +182,9 @@ _has_cargo = shutil.which("cargo") is not None
 
 
 @pytest.fixture(scope="session")
-def clap_validator() -> Optional[Path]:
-    """Build the clap-validator once per session.
+def clap_validator() -> Path | None:
+    """
+    Build the clap-validator once per session.
 
     The validator binary persists in build/.clap_validator/ so it is only
     compiled on first run.  Returns None if cargo is unavailable or the
@@ -181,39 +202,43 @@ def clap_validator() -> Optional[Path]:
     _CLAP_VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
 
     if not (src_dir / "Cargo.toml").is_file():
-        result = subprocess.run(
+        git = _resolve_executable("git")
+        result = _SUBPROCESS_RUN(
             [
-                "git",
+                git,
                 "clone",
                 "--depth",
                 "1",
                 "https://github.com/free-audio/clap-validator.git",
                 str(src_dir),
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=120,
         )
         if result.returncode != 0:
-            print(f"clap-validator clone failed:\n{result.stderr}")
-            return None
+            message = f"clap-validator clone failed:\n{result.stderr}"
+            raise RuntimeError(message)
 
-    result = subprocess.run(
-        ["cargo", "build", "--release"],
+    cargo = _resolve_executable("cargo")
+    result = _SUBPROCESS_RUN(
+        [cargo, "build", "--release"],
+        check=False,
         cwd=src_dir,
         capture_output=True,
         text=True,
         timeout=300,
     )
     if result.returncode != 0:
-        print(f"clap-validator build failed:\n{result.stderr}")
-        return None
+        message = f"clap-validator build failed:\n{result.stderr}"
+        raise RuntimeError(message)
 
     if binary.is_file() and os.access(binary, os.X_OK):
         return binary
 
-    print("clap-validator binary not found after build")
-    return None
+    message = "clap-validator binary not found after build"
+    raise RuntimeError(message)
 
 
 # -- VST3 validator fixture ----------------------------------------------------
@@ -242,12 +267,14 @@ _VST3_VALIDATOR_CMAKE = textwrap.dedent("""\
 
 
 @pytest.fixture(scope="session")
-def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
-    """Build the VST3 SDK validator once per session.
+def vst3_validator(fetchcontent_cache: Path) -> Path | None:
+    """
+    Build the VST3 SDK validator once per session.
 
     Returns None if cmake is unavailable or the build fails.
     """
-    if not shutil.which("cmake"):
+    cmake = shutil.which("cmake")
+    if not cmake:
         return None
 
     _VST3_VALIDATOR_DIR.mkdir(parents=True, exist_ok=True)
@@ -268,8 +295,9 @@ def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
     if sdk_src.is_dir():
         cmake_configure.append(f"-DFETCHCONTENT_SOURCE_DIR_VST3SDK={sdk_src}")
 
-    result = subprocess.run(
+    result = _SUBPROCESS_RUN(
         cmake_configure,
+        check=False,
         cwd=build_dir,
         capture_output=True,
         text=True,
@@ -277,11 +305,12 @@ def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
         env=env,
     )
     if result.returncode != 0:
-        print(f"VST3 validator cmake configure failed:\n{result.stderr}")
+        sys.stderr.write(f"VST3 validator cmake configure failed:\n{result.stderr}\n")
         return None
 
-    result = subprocess.run(
-        ["cmake", "--build", ".", "--target", "validator"],
+    result = _SUBPROCESS_RUN(
+        [cmake, "--build", ".", "--target", "validator"],
+        check=False,
         cwd=build_dir,
         capture_output=True,
         text=True,
@@ -289,14 +318,14 @@ def vst3_validator(fetchcontent_cache: Path) -> Optional[Path]:
         env=env,
     )
     if result.returncode != 0:
-        print(f"VST3 validator build failed:\n{result.stderr}")
+        sys.stderr.write(f"VST3 validator build failed:\n{result.stderr}\n")
         return None
 
     for candidate in build_dir.glob("**/validator"):
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
 
-    print("VST3 validator binary not found after build")
+    sys.stderr.write("VST3 validator binary not found after build\n")
     return None
 
 
@@ -477,22 +506,26 @@ _LV2_VALIDATOR_SRC = textwrap.dedent("""\
 def _check_pkg_config_lilv() -> bool:
     """Return True if pkg-config can resolve lilv-0."""
     try:
-        result = subprocess.run(
-            ["pkg-config", "--exists", "lilv-0"],
+        pkg_config = _resolve_executable("pkg-config")
+        result = _SUBPROCESS_RUN(
+            [pkg_config, "--exists", "lilv-0"],
+            check=False,
             capture_output=True,
             timeout=10,
         )
-        return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+    else:
+        return result.returncode == 0
 
 
 _has_pkg_config_lilv = _check_pkg_config_lilv()
 
 
 @pytest.fixture(scope="session")
-def lv2_validator() -> Optional[Path]:
-    """Compile a minimal LV2 validator from C once per session.
+def lv2_validator() -> Path | None:
+    """
+    Compile a minimal LV2 validator from C once per session.
 
     Uses pkg-config for lilv-0 flags.  Returns None if lilv-0 is not
     available or compilation fails.
@@ -510,14 +543,17 @@ def lv2_validator() -> Optional[Path]:
     src.write_text(_LV2_VALIDATOR_SRC)
 
     try:
-        cflags = subprocess.run(
-            ["pkg-config", "--cflags", "lilv-0"],
+        pkg_config = _resolve_executable("pkg-config")
+        cflags = _SUBPROCESS_RUN(
+            [pkg_config, "--cflags", "lilv-0"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=10,
         ).stdout.strip()
-        libs = subprocess.run(
-            ["pkg-config", "--libs", "lilv-0"],
+        libs = _SUBPROCESS_RUN(
+            [pkg_config, "--libs", "lilv-0"],
+            check=False,
             capture_output=True,
             text=True,
             timeout=10,
@@ -525,17 +561,26 @@ def lv2_validator() -> Optional[Path]:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
 
-    cmd = f"cc {cflags} {str(src)} {libs} -lm -o {str(binary)}"
-    result = subprocess.run(
+    cc = _resolve_executable("cc")
+    cmd = [
+        cc,
+        *shlex.split(cflags),
+        str(src),
+        *shlex.split(libs),
+        "-lm",
+        "-o",
+        str(binary),
+    ]
+    result = _SUBPROCESS_RUN(
         cmd,
-        shell=True,
+        check=False,
         capture_output=True,
         text=True,
         timeout=30,
         cwd=_LV2_VALIDATOR_DIR,
     )
     if result.returncode != 0:
-        print(f"LV2 validator compile failed:\n{result.stderr}")
+        sys.stderr.write(f"LV2 validator compile failed:\n{result.stderr}\n")
         return None
 
     return binary

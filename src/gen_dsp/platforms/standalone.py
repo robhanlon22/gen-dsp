@@ -11,7 +11,6 @@ import platform as sys_platform
 import shutil
 from pathlib import Path
 from string import Template
-from typing import Optional
 
 from gen_dsp.core.builder import BuildResult
 from gen_dsp.core.manifest import Manifest, build_remap_defines_make
@@ -43,12 +42,14 @@ class StandalonePlatform(Platform):
         manifest: Manifest,
         output_dir: Path,
         lib_name: str,
-        config: Optional[ProjectConfig] = None,
+        config: ProjectConfig | None = None,
     ) -> None:
         """Generate standalone project files."""
+        _ = config
         templates_dir = get_standalone_templates_dir()
         if not templates_dir.is_dir():
-            raise ProjectError(f"Standalone templates not found at {templates_dir}")
+            msg = f"Standalone templates not found at {templates_dir}"
+            raise ProjectError(msg)
 
         # Copy static files
         static_files = [
@@ -96,7 +97,8 @@ class StandalonePlatform(Platform):
     ) -> None:
         """Render a template file with the given substitutions."""
         if not template_path.exists():
-            raise ProjectError(f"Template not found at {template_path}")
+            msg = f"Template not found at {template_path}"
+            raise ProjectError(msg)
 
         template_content = template_path.read_text(encoding="utf-8")
         template = Template(template_content)
@@ -106,13 +108,15 @@ class StandalonePlatform(Platform):
     def build(
         self,
         project_dir: Path,
+        *,
         clean: bool = False,
         verbose: bool = False,
     ) -> BuildResult:
         """Build standalone executable using make."""
         makefile = project_dir / "Makefile"
         if not makefile.exists():
-            raise BuildError(f"Makefile not found in {project_dir}")
+            msg = f"Makefile not found in {project_dir}"
+            raise BuildError(msg)
 
         if clean:
             self.run_command(["make", "clean"], project_dir)
@@ -133,8 +137,9 @@ class StandalonePlatform(Platform):
         """Clean build artifacts."""
         self.run_command(["make", "clean"], project_dir)
 
-    def find_output(self, project_dir: Path) -> Optional[Path]:
-        """Find the built executable.
+    def find_output(self, project_dir: Path) -> Path | None:
+        """
+        Find the built executable.
 
         The executable name matches the lib_name from the Makefile.
         We look for any executable file in the project root.
